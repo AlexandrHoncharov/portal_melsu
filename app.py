@@ -27,7 +27,7 @@ app.config['JWT_REFRESH_TOKEN_EXPIRES'] = timedelta(days=30)
 
 db = SQLAlchemy(app)
 jwt = JWTManager(app)
-CORS(app, supports_credentials=True)
+CORS(app, resources={r"/api/*": {"origins": "http://localhost:5173"}}, supports_credentials=True)
 
 app.config['MAIL_SERVER'] = 'email.melsu.ru'
 app.config['MAIL_PORT'] = 587
