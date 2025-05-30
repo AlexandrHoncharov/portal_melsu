@@ -282,6 +282,70 @@ def generate_verification_code():
     return str(secrets.randbelow(100000)).zfill(5)
 
 
+@app.route('/api/departments/<int:dept_id>/detailed-members', methods=['GET'])
+@admin_required  # Защищаем эндпоинт, доступ только для админов
+def get_department_detailed_members(dept_id):
+    """
+    Получение списка пользователей (членов) указанного подразделения
+    с их полными именами и ролями.
+    """
+    department = db.session.get(Department, dept_id)  # Более современный способ получения по ID
+    if not department:
+        return jsonify({'error': 'Подразделение не найдено'}), 404
+
+    # Загружаем пользователей (членов подразделения) вместе с их профилями и ролями
+    # для оптимизации и избежания N+1 запросов при доступе к user.profile и user.roles
+    # department.members - это ваше db.relationship('User', secondary=department_users, ...)
+    members_query = department.members.options(
+        joinedload(User.profile),  # Загружаем связанный профиль пользователя
+        joinedload(User.roles).joinedload(Role.users).raiseload('*'),  # Загружаем роли пользователя
+        # .joinedload(Role.users).raiseload('*') здесь может быть избыточен,
+        # достаточно db.joinedload(User.roles)
+    ).order_by(User.username)  # Опциональная сортировка, например, по username
+
+    # Если вы хотите сортировать по фамилии/имени из профиля, это будет сложнее,
+    # так как профиль может отсутствовать. Можно сделать так:
+    # from sqlalchemy import asc, case
+    # members_query = department.members.outerjoin(UserProfile).options(
+    #     joinedload(User.profile),
+    #     joinedload(User.roles)
+    # ).order_by(
+    #     case(
+    #         (UserProfile.last_name != None, UserProfile.last_name),
+    #         else_=User.username
+    #     ).asc(),
+    #     case(
+    #         (UserProfile.first_name != None, UserProfile.first_name),
+    #         else_=User.username # Дополнительная сортировка, если фамилии совпадают
+    #     ).asc()
+    # )
+
+    members = members_query.all()
+
+    members_data = []
+    for member in members:
+        full_name = member.username  # Фоллбэк, если нет профиля или имен в профиле
+        if member.profile:
+            # Формируем полное имя из частей профиля, если они есть
+            name_parts = [n for n in [member.profile.last_name, member.profile.first_name, member.profile.middle_name]
+                          if n and n.strip()]
+            if name_parts:
+                full_name = ' '.join(name_parts)
+
+        # Получаем отображаемые имена ролей пользователя
+        # Предполагается, что у модели Role есть поле 'display_name'
+        member_roles = sorted([role.display_name for role in member.roles if role.display_name])
+
+        members_data.append({
+            'id': member.id,
+            'full_name': full_name,
+            'email': member.email,
+            'roles': member_roles,  # Список отображаемых имен ролей
+            'username': member.username  # Дополнительно username, если нужно
+        })
+
+    return jsonify(members_data), 200
+
 @app.route('/api/departments/<int:dept_id>/members', methods=['GET'])
 @admin_required
 def get_department_members(dept_id):
