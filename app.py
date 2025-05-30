@@ -222,10 +222,7 @@ class Form(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 
-department_users = db.Table('department_users',
-    db.Column('user_id', db.Integer, db.ForeignKey('user.id'), primary_key=True),
-    db.Column('department_id', db.Integer, db.ForeignKey('department.id'), primary_key=True)
-)
+
 
 class Department(db.Model):
     id = db.Column(db.Integer, primary_key=True)
