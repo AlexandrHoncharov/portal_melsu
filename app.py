@@ -1118,11 +1118,13 @@ def refresh():
 @jwt_required()
 def get_profile():
     current_user_id = get_jwt_identity()
-    # Eager load related data to prevent N+1 queries
+
+    # Eager load related data to prevent N+1 queries for profile and roles
+    # User.departments будет загружен отдельным запросом при обращении,
+    # так как он определен с lazy='dynamic' в backref
     user = User.query.options(
-        db.joinedload(User.profile),
-        db.joinedload(User.roles),
-        db.joinedload(User.departments)  # Eager load departments user is a member of
+        db.joinedload(User.profile),  # Загружаем профиль пользователя сразу
+        db.joinedload(User.roles)  # Загружаем роли пользователя сразу
     ).get(current_user_id)
 
     if not user:
@@ -1133,33 +1135,31 @@ def get_profile():
         'email': user.email,
         'username': user.username,
         'phone': user.phone,
-        'roles': [role.display_name for role in user.roles],  # Used by General.jsx to set userRoles
+        'roles': [role.display_name for role in user.roles],
         'full_name': None,
         'birth_date': None,
 
-        # Data for Profile.jsx specific fields - initialize with None
         'position': None,
-        'mainDepartmentName': None,  # Основное подразделение (для сотрудника/преподавателя)
-        'trainingDirection': None,  # Направление подготовки (для студента)
-        'studentDepartmentName': None,  # Кафедра студента
+        'mainDepartmentName': None,
+        'trainingDirection': None,
+        'studentDepartmentName': None,
         'course': None,
         'groupName': None,
-        'academicDegree': None,  # Ученая степень (для преподавателя)
-        'snils': None,  # СНИЛС (для абитуриента)
-        'school': None,  # Школа (для школьника)
+        'academicDegree': None,
+        'snils': None,
+        'school': None,
 
-        # The requested field: list of departments the user is a member of
-        'member_of_departments': [{'id': dept.id, 'name': dept.name} for dept in user.departments]
+        # Получаем департаменты, в которых состоит пользователь.
+        # user.departments.all() выполнит запрос к БД здесь.
+        'member_of_departments': [{'id': dept.id, 'name': dept.name} for dept in user.departments.all()]
     }
 
     if user.profile:
-        # Populate FullName
         names = [user.profile.last_name, user.profile.first_name, user.profile.middle_name]
         user_data['full_name'] = ' '.join(filter(None, names))
-        if not user_data['full_name']:  # Fallback if profile names are empty
+        if not user_data['full_name']:
             user_data['full_name'] = user.username
 
-        # Populate BirthDate (formatted)
         if user.profile.birth_date:
             months = [
                 'января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
@@ -1172,42 +1172,34 @@ def get_profile():
                 year = user.profile.birth_date.year
                 user_data['birth_date'] = f"{day} {month_str} {year} г."
             else:
-                user_data['birth_date'] = user.profile.birth_date.isoformat()  # Fallback
+                user_data['birth_date'] = user.profile.birth_date.isoformat()
 
-        # Populate fields from UserProfile model based on its current structure
-        # UserProfile.department is "Отдел (для сотрудников)"
-        # UserProfile.position is "Должность (для сотрудников)"
-        # UserProfile.course is "Курс (для студентов)"
-        # UserProfile.group_name is "Название группы (для студентов)"
-        # UserProfile.school is "Школа (для школьников)"
+        user_data['position'] = user.profile.position
+        user_data['school'] = user.profile.school
+        user_data['course'] = user.profile.course
+        user_data['groupName'] = user.profile.group_name
 
-        user_data['position'] = user.profile.position  # For Сотрудник
-        user_data['school'] = user.profile.school  # For Школьник
-        user_data['course'] = user.profile.course  # For Студент
-        user_data['groupName'] = user.profile.group_name  # For Студент
-
-        # mainDepartmentName: Primarily for Сотрудник or Преподаватель from UserProfile.department
+        # mainDepartmentName для Сотрудника или Преподавателя
         if 'Сотрудник' in user_data['roles'] or 'Преподаватель' in user_data['roles']:
             user_data['mainDepartmentName'] = user.profile.department
 
-        # studentDepartmentName: This would typically come from a specific field in UserProfile for students.
-        # If UserProfile.department is NOT for students, this will remain None unless a new field is added.
-        # For Profile.jsx, if student_department_name is needed, it should be a distinct field in UserProfile.
-        # Example: user_data['studentDepartmentName'] = getattr(user.profile, 'student_faculty_name', None)
-        # For now, we'll assume it might be missing or could be derived differently on the front-end if needed.
-        # The Profile.jsx uses `studentDepartmentName || mainDepartmentName` for student's department display.
-        # So, if UserProfile.department is the student's faculty, it could be mapped here:
-        # if 'Студент' in user_data['roles']:
-        #    user_data['studentDepartmentName'] = user.profile.department # If UserProfile.department also serves this
+        # studentDepartmentName - если это отдельное поле в UserProfile
+        # или если user.profile.department используется и для студентов
+        # if 'Студент' in user_data['roles'] and hasattr(user.profile, 'student_department_name'):
+        #     user_data['studentDepartmentName'] = user.profile.student_department_name
+        # elif 'Студент' in user_data['roles'] and user.profile.department: # Если department это и кафедра студента
+        #     user_data['studentDepartmentName'] = user.profile.department
 
-        # Fields that are likely not in the current UserProfile model (use getattr for safety)
-        user_data['trainingDirection'] = getattr(user.profile, 'training_direction', None)  # For Студент
-        user_data['academicDegree'] = getattr(user.profile, 'academic_degree', None)  # For Преподаватель
-        user_data['snils'] = getattr(user.profile, 'snils', None)  # For Абитуриент
-        # If studentDepartmentName is a separate field in UserProfile:
+        # Для этих полей предполагается, что они могут быть в UserProfile
+        # Если их там нет, getattr вернет None
+        user_data['trainingDirection'] = getattr(user.profile, 'training_direction', None)
+        user_data['academicDegree'] = getattr(user.profile, 'academic_degree', None)
+        user_data['snils'] = getattr(user.profile, 'snils', None)
+        # Явно для studentDepartmentName, если есть такое поле в модели UserProfile
         user_data['studentDepartmentName'] = getattr(user.profile, 'student_department_name', None)
 
-    else:  # if user.profile is None, use username as fallback for full_name
+
+    else:
         user_data['full_name'] = user.username
 
     return jsonify(user_data), 200
