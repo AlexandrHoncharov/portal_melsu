@@ -1205,22 +1205,29 @@ def delete_form(form_id):
 """
 
 
-# app.py
+def admin_required(fn):
+    @wraps(fn)  # Сохраняет метаданные оборачиваемой функции (имя, docstring и т.д.)
+    @jwt_required()  # Сначала проверяем, что пользователь вообще аутентифицирован (валидный JWT токен)
+    def wrapper(*args, **kwargs):
+        current_user_id = get_jwt_identity()
+        user = User.query.get(current_user_id)  # Получаем пользователя из БД
 
-# ... (импорты: Flask, jsonify, db, Department, User, Role, jwt_required, get_jwt_identity,
-#      func, aliased, joinedload, department_users - если еще не импортирован) ...
+        if not user:
+            # Эта ситуация маловероятна, если jwt_required() прошел, но лучше проверить
+            return jsonify({'error': 'Пользователь не найден или токен недействителен'}), 401
 
-# Убедитесь, что декоратор admin_required определен где-то выше
-# def admin_required(fn):
-#     @jwt_required()
-#     def wrapper(*args, **kwargs):
-#         current_user_id = get_jwt_identity()
-#         user = User.query.get(current_user_id)
-#         if not user or 'admin' not in [role.name for role in user.roles]:
-#             return jsonify({'error': 'Недостаточно прав. Требуется роль администратора.'}), 403
-#         return fn(*args, **kwargs)
-#     wrapper.__name__ = fn.__name__
-#     return wrapper
+        # Проверяем, есть ли у пользователя роль 'admin'
+        # Предполагается, что у модели User есть отношение user.roles,
+        # и у модели Role есть поле 'name' (системное имя роли, например, 'admin')
+        is_admin = any(role.name == 'admin' for role in user.roles)
+
+        if not is_admin:
+            return jsonify({'error': 'Недостаточно прав. Требуется роль администратора.'}), 403
+
+        # Если все проверки пройдены, вызываем оригинальную функцию эндпоинта
+        return fn(*args, **kwargs)
+
+    return wrapper
 
 
 @app.route('/api/departments', methods=['GET'])
