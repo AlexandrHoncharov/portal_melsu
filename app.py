@@ -204,24 +204,32 @@ class Form(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 
+department_users = db.Table('department_users',
+    db.Column('user_id', db.Integer, db.ForeignKey('user.id'), primary_key=True),
+    db.Column('department_id', db.Integer, db.ForeignKey('department.id'), primary_key=True)
+)
+
 class Department(db.Model):
     """
     Модель структурных подразделений университета.
-    ... (остальные атрибуты без изменений) ...
     """
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(200), nullable=False)
     short_name = db.Column(db.String(50))
     description = db.Column(db.Text)
     parent_id = db.Column(db.Integer, db.ForeignKey('department.id'))
-    head_user_id = db.Column(db.Integer, db.ForeignKey('user.id'))
+    head_user_id = db.Column(db.Integer, db.ForeignKey('user.id')) # Руководитель
     created_by = db.Column(db.Integer, db.ForeignKey('user.id'))
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
-    # ИЗМЕНЕНИЕ ЗДЕСЬ: lazy='dynamic' для children
     parent = db.relationship('Department', remote_side=[id], backref=backref('children', lazy='dynamic'))
-    head = db.relationship('User', foreign_keys=[head_user_id], backref='headed_departments')
+    head = db.relationship('User', foreign_keys=[head_user_id], backref='headed_departments') # Связь для руководителя
     creator = db.relationship('User', foreign_keys=[created_by], backref='created_departments')
+
+    # НОВАЯ СВЯЗЬ: Пользователи в этом подразделении
+    members = db.relationship('User', secondary=department_users,
+                              lazy='dynamic', # Используем dynamic для возможности .count() и фильтрации
+                              backref=db.backref('departments', lazy='dynamic'))
 
 """
 ================= УТИЛИТЫ =================
@@ -247,6 +255,123 @@ def generate_verification_code():
     """Генерирует случайный 5-значный цифровой код."""
     return str(secrets.randbelow(100000)).zfill(5)
 
+
+@app.route('/api/departments/<int:dept_id>/members', methods=['GET'])
+@admin_required
+def get_department_members(dept_id):
+    """Получение списка пользователей (членов) указанного подразделения."""
+    department = Department.query.get_or_404(dept_id)
+
+    # Загружаем пользователей вместе с их профилями для отображения имен
+    members = department.members.options(db.joinedload(User.profile)).all()
+
+    members_data = []
+    for member in members:
+        full_name = member.username
+        if member.profile:
+            names = [member.profile.last_name, member.profile.first_name, member.profile.middle_name]
+            full_name = ' '.join(filter(None, names)) or member.username
+        members_data.append({
+            'id': member.id,
+            'full_name': full_name,
+            'email': member.email
+        })
+    return jsonify(members_data), 200
+
+
+@app.route('/api/departments/<int:dept_id>/members', methods=['POST'])
+@admin_required
+def add_department_member(dept_id):
+    """Добавление пользователя в подразделение."""
+    department = Department.query.get_or_404(dept_id)
+    data = request.get_json()
+    user_id = data.get('user_id')
+
+    if not user_id:
+        return jsonify({'error': 'user_id обязателен'}), 400
+
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({'error': 'Пользователь не найден'}), 404
+
+    if user in department.members:
+        return jsonify({'error': 'Пользователь уже состоит в этом подразделении'}), 400
+
+    try:
+        department.members.append(user)
+        db.session.commit()
+        return jsonify({'message': f'Пользователь {user.username} добавлен в подразделение {department.name}'}), 200
+    except Exception as e:
+        db.session.rollback()
+        app.logger.error(f"Ошибка добавления пользователя в подразделение: {e}")
+        return jsonify({'error': 'Ошибка добавления пользователя в подразделение'}), 500
+
+
+@app.route('/api/departments/<int:dept_id>/members/<int:user_id>', methods=['DELETE'])
+@admin_required
+def remove_department_member(dept_id, user_id):
+    """Удаление пользователя из подразделения."""
+    department = Department.query.get_or_404(dept_id)
+    user = User.query.get_or_404(user_id)
+
+    # Нельзя удалить руководителя подразделения этим эндпоинтом,
+    # сначала нужно сменить руководителя или удалить его через поле head_user_id
+    if department.head_user_id == user.id:
+        return jsonify({'error': 'Нельзя удалить руководителя подразделения. Сначала смените руководителя.'}), 400
+
+    if user not in department.members:
+        return jsonify({'error': 'Пользователь не состоит в этом подразделении'}), 400
+
+    try:
+        department.members.remove(user)
+        db.session.commit()
+        return jsonify({'message': f'Пользователь {user.username} удален из подразделения {department.name}'}), 200
+    except Exception as e:
+        db.session.rollback()
+        app.logger.error(f"Ошибка удаления пользователя из подразделения: {e}")
+        return jsonify({'error': 'Ошибка удаления пользователя из подразделения'}), 500
+
+
+# Эндпоинт для обновления всего списка участников подразделения (более удобный для UI)
+@app.route('/api/departments/<int:dept_id>/update-members', methods=['PUT'])
+@admin_required
+def update_department_members(dept_id):
+    department = Department.query.get_or_404(dept_id)
+    data = request.get_json()
+    member_ids = data.get('member_ids')  # Ожидаем список ID пользователей
+
+    if member_ids is None or not isinstance(member_ids, list):
+        return jsonify({'error': 'member_ids должен быть списком ID пользователей'}), 400
+
+    # Проверяем, чтобы руководитель не был удален из списка участников, если он там есть
+    # Это не обязательно, т.к. руководитель - отдельное поле, но для консистентности
+    # if department.head_user_id and department.head_user_id not in member_ids:
+    #     member_ids.append(department.head_user_id) # Автоматически добавляем руководителя, если он не в списке. Или можно выдать ошибку.
+
+    new_members = User.query.filter(User.id.in_(member_ids)).all()
+
+    # Проверяем, что все переданные ID существуют
+    if len(new_members) != len(set(member_ids)):  # set для уникальных ID
+        found_ids = {member.id for member in new_members}
+        missing_ids = [id for id in member_ids if id not in found_ids]
+        return jsonify({'error': f'Некоторые пользователи не найдены: {missing_ids}'}), 404
+
+    try:
+        # Нельзя удалить руководителя подразделения, если он был назначен
+        # и его нет в новом списке участников. Это должно управляться через поле head_user_id.
+        # Если руководитель был участником, а теперь нет, это ОК, но он останется руководителем.
+        # Если же нужно, чтобы руководитель ОБЯЗАТЕЛЬНО был участником,
+        # то при назначении руководителя его нужно автоматически добавлять в members,
+        # и при удалении из members - снимать с поста руководителя (или запрещать удаление).
+        # Пока оставляем логику, что руководитель - это отдельная сущность от простого участника.
+
+        department.members = new_members  # SQLAlchemy обработает добавление новых и удаление старых
+        db.session.commit()
+        return jsonify({'message': f'Состав подразделения {department.name} обновлен'}), 200
+    except Exception as e:
+        db.session.rollback()
+        app.logger.error(f"Ошибка обновления состава подразделения: {e}")
+        return jsonify({'error': 'Ошибка обновления состава подразделения'}), 500
 
 def send_verification_email(email, code):
     """
@@ -1080,70 +1205,101 @@ def delete_form(form_id):
 """
 
 
+# app.py
+
+# ... (импорты: Flask, jsonify, db, Department, User, Role, jwt_required, get_jwt_identity,
+#      func, aliased, joinedload, department_users - если еще не импортирован) ...
+
+# Убедитесь, что декоратор admin_required определен где-то выше
+# def admin_required(fn):
+#     @jwt_required()
+#     def wrapper(*args, **kwargs):
+#         current_user_id = get_jwt_identity()
+#         user = User.query.get(current_user_id)
+#         if not user or 'admin' not in [role.name for role in user.roles]:
+#             return jsonify({'error': 'Недостаточно прав. Требуется роль администратора.'}), 403
+#         return fn(*args, **kwargs)
+#     wrapper.__name__ = fn.__name__
+#     return wrapper
+
+
 @app.route('/api/departments', methods=['GET'])
-@jwt_required()
+@admin_required  # Используем ваш декоратор для проверки прав админа
 def get_departments():
     """
-    Получение иерархической структуры всех подразделений.
+    Получение иерархической структуры всех подразделений с количеством детей и участников.
     Оптимизирован для уменьшения количества запросов к БД.
     Доступно только пользователям с ролью 'admin'.
     """
-    current_user_id = get_jwt_identity()
-    user = db.session.get(User, current_user_id)  # Современный способ
-
-    if not user or 'admin' not in [role.name for role in user.roles]:  # Добавил проверку user
-        return jsonify({'error': 'Недостаточно прав или пользователь не найден'}), 403
 
     # 1. Получить всех пользователей с профилями для руководителей (оптимизация)
     heads_profiles_map = {}
     # Загружаем пользователей вместе с их профилями, чтобы избежать N+1 запросов
-    users_with_profiles = db.session.query(User).options(joinedload(User.profile)).filter(User.profile.has()).all()
-    for u in users_with_profiles:
+    # Фильтруем только тех, кто может быть руководителем (опционально, если есть такая логика)
+    potential_heads = db.session.query(User).options(joinedload(User.profile)).all()
+    for u in potential_heads:
         profile = u.profile
-        name_parts = filter(None, [profile.last_name, profile.first_name, profile.middle_name])
-        full_name = ' '.join(name_parts)
-        heads_profiles_map[u.id] = full_name if full_name.strip() else u.username
+        if profile:
+            name_parts = filter(None, [profile.last_name, profile.first_name, profile.middle_name])
+            full_name = ' '.join(name_parts)
+            heads_profiles_map[u.id] = full_name if full_name.strip() else u.username
+        else:
+            heads_profiles_map[u.id] = u.username
 
-    # 2. Получить все департаменты и количество их прямых детей
+    # 2. Получить все департаменты, количество их прямых детей и количество участников
     ChildDepartment = aliased(Department)
 
-    # Формируем запрос
+    # Subquery для подсчета участников (members)
+    # department_users - это ваша db.Table('department_users', ...)
+    members_count_subquery = db.session.query(
+        department_users.c.department_id.label('dept_id_for_members'),  # Явно указываем метку
+        func.count(department_users.c.user_id).label('num_members')
+    ).group_by(department_users.c.department_id).subquery('members_count_sq')  # Даем имя subquery
+
+    # Основной запрос
     query = db.session.query(
         Department,
-        func.count(ChildDepartment.id).label('children_count')
+        func.count(ChildDepartment.id).label('children_count'),
+        func.coalesce(members_count_subquery.c.num_members, 0).label('members_count_val')
     )
-    # Добавляем outerjoin
+    # LEFT JOIN для подсчета дочерних подразделений
     query = query.outerjoin(ChildDepartment, Department.id == ChildDepartment.parent_id)
-    # Добавляем group_by
-    query = query.group_by(Department.id)
+    # LEFT JOIN для подсчета участников
+    query = query.outerjoin(members_count_subquery, Department.id == members_count_subquery.c.dept_id_for_members)
 
-    # Выполняем запрос
-    all_departments_with_children_count = query.all()
+    query = query.group_by(Department.id,
+                           members_count_subquery.c.num_members)  # Важно группировать по всем неагрегированным полям из SELECT и JOIN
+
+    all_departments_with_counts = query.all()  # Результат: список кортежей (Department_obj, children_count, members_count_val)
 
     # Создаем карту для быстрого доступа и построения дерева
     departments_data_map = {}
-    for dept_obj, children_count_val in all_departments_with_children_count:
+    for dept_obj, children_count_val, members_count_value in all_departments_with_counts:
         departments_data_map[dept_obj.id] = {
-            'obj': dept_obj,
+            'obj': dept_obj,  # Сам объект Department
             'children_count': children_count_val,
-            'children_list_objs': []
+            'members_count': members_count_value,
+            'children_list_objs': []  # Сюда будем добавлять дочерние объекты Department
         }
 
     # 3. Построить связи родитель-ребенок
     root_department_objs = []
-    for dept_id_map_key in departments_data_map:  # Используем dept_id_map_key для итерации по ключам
+    for dept_id_map_key in departments_data_map:
         dept_entry = departments_data_map[dept_id_map_key]
         parent_id = dept_entry['obj'].parent_id
         if parent_id is None:
-            root_department_objs.append(dept_entry['obj'])
+            root_department_objs.append(dept_entry['obj'])  # Добавляем объект Department
         elif parent_id in departments_data_map:
+            # Добавляем объект Department в список дочерних объектов родителя
             departments_data_map[parent_id]['children_list_objs'].append(dept_entry['obj'])
 
-    # 4. Рекурсивно построить JSON дерево
+            # 4. Рекурсивно построить JSON дерево
+
     def build_json_tree_recursive(department_object_list):
         tree_nodes = []
-        for dept_obj_tree in department_object_list:  # Используем dept_obj_tree для избежания конфликта имен
+        for dept_obj_tree in department_object_list:  # dept_obj_tree - это объект Department
             dept_id_tree = dept_obj_tree.id
+            # Получаем данные из карты, включая предварительно посчитанные 'children_count' и 'members_count'
             dept_data_from_map = departments_data_map[dept_id_tree]
 
             head_info = None
@@ -1156,16 +1312,19 @@ def get_departments():
                 'short_name': dept_obj_tree.short_name,
                 'description': dept_obj_tree.description,
                 'parent_id': dept_obj_tree.parent_id,
-                'head': head_info,
-                'created_at': dept_obj_tree.created_at.isoformat() + 'Z',
-                'children_count': dept_data_from_map['children_count'],
-                'children': build_json_tree_recursive(
+                'head': head_info,  # Информация о руководителе
+                'created_at': dept_obj_tree.created_at.isoformat() + 'Z',  # ISO формат с Z
+                'children_count': dept_data_from_map['children_count'],  # Количество прямых дочерних подразделений
+                'members_count': dept_data_from_map['members_count'],  # Количество участников
+                'children': build_json_tree_recursive(  # Рекурсивный вызов для дочерних объектов Department
                     sorted(dept_data_from_map['children_list_objs'], key=lambda d: d.name)
+                    # Сортируем дочерние по имени
                 )
             }
             tree_nodes.append(node)
         return tree_nodes
 
+    # Строим дерево из корневых объектов Department, предварительно отсортировав их
     final_tree_structure = build_json_tree_recursive(
         sorted(root_department_objs, key=lambda d: d.name)
     )
