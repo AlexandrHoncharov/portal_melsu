@@ -1113,18 +1113,21 @@ def refresh():
 Эндпоинты для получения информации о текущем пользователе.
 """
 
+
 @app.route('/api/user/profile', methods=['GET'])
 @jwt_required()
 def get_profile():
     """
     Получение профиля текущего авторизованного пользователя.
     Требует валидный access токен.
-
-    Returns:
-        JSON: Подробная информация о пользователе и его профиле.
+    Возвращает подробную информацию о пользователе, его профиле и подразделениях.
     """
     current_user_id = get_jwt_identity()
-    user = User.query.get(current_user_id)
+    # Используем joinedload для одновременной загрузки профиля и списка подразделений, где пользователь состоит
+    user = User.query.options(
+        joinedload(User.profile),
+        joinedload(User.departments_member_of)  # Загружаем подразделения, в которых состоит пользователь
+    ).get(current_user_id)
 
     if not user:
         return jsonify({'error': 'Пользователь не найден'}), 404
@@ -1134,36 +1137,69 @@ def get_profile():
         'email': user.email,
         'username': user.username,
         'phone': user.phone,
-        'roles': [role.display_name for role in user.roles],
+        'roles': [role.display_name for role in user.roles],  # Отображаемые имена ролей
         'full_name': None,
-        'birth_date': None
+        'birth_date': None,
+        'profile': {},  # Инициализируем объект профиля
+        'member_of_departments': []  # Инициализируем список подразделений
     }
 
+    # Формируем ФИО
+    if user.profile and (user.profile.last_name or user.profile.first_name or user.profile.middle_name):
+        name_parts = [n for n in [user.profile.last_name, user.profile.first_name, user.profile.middle_name] if
+                      n and n.strip()]
+        user_data['full_name'] = ' '.join(name_parts) if name_parts else user.username
+    else:
+        user_data['full_name'] = user.username
+
+    # Форматируем дату рождения
+    if user.profile and user.profile.birth_date:
+        try:
+            # Пример форматирования даты (можете адаптировать под ваш формат)
+            # months = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря']
+            # day = user.profile.birth_date.day
+            # month = months[user.profile.birth_date.month - 1]
+            # year = user.profile.birth_date.year
+            # user_data['birth_date'] = f"{day} {month} {year} г."
+            user_data['birth_date'] = user.profile.birth_date.strftime(
+                '%d %B %Y г.')  # Более простой способ с русскими локалями
+        except AttributeError:  # На случай если birth_date не объект date/datetime
+            user_data['birth_date'] = str(user.profile.birth_date) if user.profile.birth_date else None
+        except Exception as e:  # Ловим другие возможные ошибки форматирования
+            print(f"Ошибка форматирования даты рождения: {e}")
+            user_data['birth_date'] = str(user.profile.birth_date) if user.profile.birth_date else None
+
+    # Заполняем данные профиля, если они есть
     if user.profile:
-        names = [user.profile.last_name, user.profile.first_name, user.profile.middle_name]
-        user_data['full_name'] = ' '.join(filter(None, names))
-
-        if user.profile.birth_date:
-            months = [
-                'января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
-                'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'
-            ]
-            day = user.profile.birth_date.day
-            month = months[user.profile.birth_date.month - 1]
-            year = user.profile.birth_date.year
-            user_data['birth_date'] = f"{day} {month} {year} г."
-
         user_data['profile'] = {
+            # Основные поля профиля, которые вы уже использовали
             'first_name': user.profile.first_name,
             'last_name': user.profile.last_name,
             'middle_name': user.profile.middle_name,
             'gender': user.profile.gender,
-            'department': user.profile.department,
-            'position': user.profile.position,
-            'course': user.profile.course,
-            'group_name': user.profile.group_name,
-            'school': user.profile.school
+
+            # Поля, которые вы хотите отображать в "Дополнительная информация"
+            'position': user.profile.position,  # Должность (Сотрудник, Преподаватель)
+            'main_department_name': user.profile.main_department_name,
+            # Основное подразделение/кафедра (Сотрудник, Преподаватель) - если есть такое поле
+
+            'training_direction': user.profile.training_direction,  # Направление подготовки (Студент)
+            'student_department_name': user.profile.student_department_name,  # Кафедра (Студент) - если есть
+            'course': user.profile.course,  # Курс (Студент)
+            'group_name': user.profile.group_name,  # Группа (Студент)
+
+            'academic_degree': user.profile.academic_degree,  # Ученая степень (Преподаватель)
+
+            'snils': user.profile.snils,  # СНИЛС (Абитуриент)
+            'school': user.profile.school  # Школа (Школьник)
+            # Добавьте другие поля из UserProfile, если они нужны
         }
+
+    # Получаем список названий подразделений, в которых состоит пользователь
+    if user.departments_member_of:
+        user_data['member_of_departments'] = [dept.name for dept in user.departments_member_of if dept.name]
+        # Если хотите передавать объекты с ID и именем:
+        # user_data['member_of_departments'] = [{'id': dept.id, 'name': dept.name} for dept in user.departments_member_of if dept.name]
 
     return jsonify(user_data), 200
 
