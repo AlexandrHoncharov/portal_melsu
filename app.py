@@ -14,6 +14,7 @@ import smtplib
 from sqlalchemy import func # Убедитесь, что func импортирован
 from sqlalchemy.orm import aliased
 from sqlalchemy.orm import aliased, joinedload
+from functools import wraps
 
 """
 Создание и конфигурация Flask приложения.
@@ -44,6 +45,31 @@ app.config['MAIL_DEFAULT_SENDER'] = 'help@melsu.ru'
 Этот блок определяет модели SQLAlchemy, используемые для представления
 структуры данных приложения в базе данных.
 """
+
+
+def admin_required(fn):
+    @wraps(fn)  # Сохраняет метаданные оборачиваемой функции (имя, docstring и т.д.)
+    @jwt_required()  # Сначала проверяем, что пользователь вообще аутентифицирован (валидный JWT токен)
+    def wrapper(*args, **kwargs):
+        current_user_id = get_jwt_identity()
+        user = User.query.get(current_user_id)  # Получаем пользователя из БД
+
+        if not user:
+            # Эта ситуация маловероятна, если jwt_required() прошел, но лучше проверить
+            return jsonify({'error': 'Пользователь не найден или токен недействителен'}), 401
+
+        # Проверяем, есть ли у пользователя роль 'admin'
+        # Предполагается, что у модели User есть отношение user.roles,
+        # и у модели Role есть поле 'name' (системное имя роли, например, 'admin')
+        is_admin = any(role.name == 'admin' for role in user.roles)
+
+        if not is_admin:
+            return jsonify({'error': 'Недостаточно прав. Требуется роль администратора.'}), 403
+
+        # Если все проверки пройдены, вызываем оригинальную функцию эндпоинта
+        return fn(*args, **kwargs)
+
+    return wrapper
 
 class User(db.Model):
     """
@@ -1205,29 +1231,6 @@ def delete_form(form_id):
 """
 
 
-def admin_required(fn):
-    @wraps(fn)  # Сохраняет метаданные оборачиваемой функции (имя, docstring и т.д.)
-    @jwt_required()  # Сначала проверяем, что пользователь вообще аутентифицирован (валидный JWT токен)
-    def wrapper(*args, **kwargs):
-        current_user_id = get_jwt_identity()
-        user = User.query.get(current_user_id)  # Получаем пользователя из БД
-
-        if not user:
-            # Эта ситуация маловероятна, если jwt_required() прошел, но лучше проверить
-            return jsonify({'error': 'Пользователь не найден или токен недействителен'}), 401
-
-        # Проверяем, есть ли у пользователя роль 'admin'
-        # Предполагается, что у модели User есть отношение user.roles,
-        # и у модели Role есть поле 'name' (системное имя роли, например, 'admin')
-        is_admin = any(role.name == 'admin' for role in user.roles)
-
-        if not is_admin:
-            return jsonify({'error': 'Недостаточно прав. Требуется роль администратора.'}), 403
-
-        # Если все проверки пройдены, вызываем оригинальную функцию эндпоинта
-        return fn(*args, **kwargs)
-
-    return wrapper
 
 
 @app.route('/api/departments', methods=['GET'])
