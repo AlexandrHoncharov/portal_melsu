@@ -343,6 +343,222 @@ def create_default_roles():
 Эндпоинты, отвечающие за многошаговый процесс регистрации новых пользователей.
 """
 
+
+# НОВЫЙ РАЗДЕЛ: API УПРАВЛЕНИЯ ПОЛЬЗОВАТЕЛЯМИ И РОЛЯМИ (ДЛЯ АДМИНА)
+def admin_required(fn):
+    """Декоратор для проверки прав администратора"""
+
+    @jwt_required()
+    def wrapper(*args, **kwargs):
+        current_user_id = get_jwt_identity()
+        user = User.query.get(current_user_id)
+        if not user or 'admin' not in [role.name for role in user.roles]:
+            return jsonify({'error': 'Недостаточно прав. Требуется роль администратора.'}), 403
+        return fn(*args, **kwargs)
+
+    wrapper.__name__ = fn.__name__  # Сохраняем имя функции для Flask
+    return wrapper
+
+
+@app.route('/api/admin/users', methods=['GET'])
+@admin_required
+def admin_get_users():
+    """Получение списка всех пользователей (для админа)"""
+    users = User.query.options(db.joinedload(User.profile), db.joinedload(User.roles)).all()
+    users_data = []
+    for user in users:
+        full_name = user.username
+        if user.profile:
+            names = [user.profile.last_name, user.profile.first_name, user.profile.middle_name]
+            full_name = ' '.join(filter(None, names)) or user.username
+
+        users_data.append({
+            'id': user.id,
+            'username': user.username,
+            'email': user.email,
+            'full_name': full_name,
+            'roles': [role.display_name for role in user.roles],
+            'role_ids': [role.id for role in user.roles],  # Добавим ID ролей для удобства на фронте
+            'is_verified': user.is_verified,
+            'created_at': user.created_at.isoformat() + 'Z'
+        })
+    return jsonify(users_data), 200
+
+
+@app.route('/api/admin/roles', methods=['GET'])
+@admin_required
+def admin_get_roles():
+    """Получение списка всех ролей (для админа)"""
+    roles = Role.query.all()
+    roles_data = [{
+        'id': role.id,
+        'name': role.name,
+        'display_name': role.display_name,
+        'description': role.description
+    } for role in roles]
+    return jsonify(roles_data), 200
+
+
+@app.route('/api/admin/roles', methods=['POST'])
+@admin_required
+def admin_create_role():
+    """Создание новой роли (для админа)"""
+    data = request.get_json()
+    name = data.get('name', '').strip().lower().replace(' ', '_')  # системное имя
+    display_name = data.get('display_name', '').strip()
+    description = data.get('description', '').strip()
+
+    if not name or not display_name:
+        return jsonify({'error': 'Системное имя и отображаемое имя обязательны'}), 400
+
+    if not re.match(r'^[a-z0-9_]+$', name):
+        return jsonify(
+            {'error': 'Системное имя может содержать только строчные латинские буквы, цифры и подчеркивания'}), 400
+
+    if Role.query.filter_by(name=name).first():
+        return jsonify({'error': f'Роль с системным именем "{name}" уже существует'}), 400
+    if Role.query.filter_by(display_name=display_name).first():
+        return jsonify({'error': f'Роль с отображаемым именем "{display_name}" уже существует'}), 400
+
+    try:
+        new_role = Role(name=name, display_name=display_name, description=description)
+        db.session.add(new_role)
+        db.session.commit()
+        return jsonify({
+            'id': new_role.id,
+            'name': new_role.name,
+            'display_name': new_role.display_name,
+            'description': new_role.description,
+            'message': 'Роль успешно создана'
+        }), 201
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': f'Ошибка создания роли: {str(e)}'}), 500
+
+
+@app.route('/api/admin/roles/<int:role_id>', methods=['PUT'])
+@admin_required
+def admin_update_role(role_id):
+    """Обновление существующей роли (для админа)"""
+    role = Role.query.get(role_id)
+    if not role:
+        return jsonify({'error': 'Роль не найдена'}), 404
+
+    # Предотвращаем изменение системных ролей
+    system_roles = ['admin', 'student', 'teacher', 'employee', 'schoolboy']
+    if role.name in system_roles:
+        return jsonify({'error': 'Системные роли не могут быть изменены через API этим способом'}), 403
+
+    data = request.get_json()
+    display_name = data.get('display_name', '').strip()
+    description = data.get('description', '').strip()
+
+    # Системное имя `name` не меняем после создания, чтобы не ломать логику, если она на него завязана.
+    # Если нужно менять и его, потребуется более сложная логика.
+
+    if not display_name:
+        return jsonify({'error': 'Отображаемое имя обязательно'}), 400
+
+    # Проверка на уникальность display_name, исключая текущую роль
+    existing_role_by_display_name = Role.query.filter(Role.display_name == display_name, Role.id != role_id).first()
+    if existing_role_by_display_name:
+        return jsonify({'error': f'Роль с отображаемым именем "{display_name}" уже существует'}), 400
+
+    try:
+        role.display_name = display_name
+        role.description = description
+        db.session.commit()
+        return jsonify({
+            'id': role.id,
+            'name': role.name,
+            'display_name': role.display_name,
+            'description': role.description,
+            'message': 'Роль успешно обновлена'
+        }), 200
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': f'Ошибка обновления роли: {str(e)}'}), 500
+
+
+@app.route('/api/admin/roles/<int:role_id>', methods=['DELETE'])
+@admin_required
+def admin_delete_role(role_id):
+    """Удаление роли (для админа)"""
+    role = Role.query.get(role_id)
+    if not role:
+        return jsonify({'error': 'Роль не найдена'}), 404
+
+    # Предотвращаем удаление системных ролей
+    system_roles = ['admin', 'student', 'teacher', 'employee', 'schoolboy']
+    if role.name in system_roles:
+        return jsonify({'error': 'Системные роли не могут быть удалены'}), 403
+
+    # Проверка, используется ли роль пользователями
+    if User.query.filter(User.roles.any(id=role_id)).first():
+        return jsonify({'error': 'Нельзя удалить роль, так как она назначена одному или нескольким пользователям'}), 400
+
+    try:
+        db.session.delete(role)
+        db.session.commit()
+        return jsonify({'message': 'Роль успешно удалена'}), 200
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': f'Ошибка удаления роли: {str(e)}'}), 500
+
+
+@app.route('/api/admin/users/<int:user_id>/roles', methods=['PUT'])
+@admin_required
+def admin_update_user_roles(user_id):
+    """Обновление ролей пользователя (для админа)"""
+    user = User.query.get(user_id)
+    if not user:
+        return jsonify({'error': 'Пользователь не найден'}), 404
+
+    data = request.get_json()
+    role_ids_to_assign = data.get('role_ids', [])
+    if not isinstance(role_ids_to_assign, list):
+        return jsonify({'error': 'role_ids должен быть списком'}), 400
+
+    # Получаем объекты ролей по их ID
+    new_roles = Role.query.filter(Role.id.in_(role_ids_to_assign)).all()
+
+    # Проверяем, чтобы роль 'admin' не была случайно снята с единственного админа
+    # или с самого себя, если это единственный админ.
+    # Это упрощенная проверка, в реальном приложении может быть сложнее.
+    is_current_user_admin = 'admin' in [r.name for r in User.query.get(get_jwt_identity()).roles]
+    is_target_user_admin = 'admin' in [r.name for r in user.roles]
+    target_is_becoming_non_admin = not any(r.name == 'admin' for r in new_roles)
+
+    if user.id == get_jwt_identity() and is_target_user_admin and target_is_becoming_non_admin:
+        return jsonify({'error': 'Вы не можете снять с себя роль администратора'}), 403
+
+    admin_role_obj = Role.query.filter_by(name='admin').first()
+    if admin_role_obj:
+        # Если пытаемся снять роль админа
+        if is_target_user_admin and admin_role_obj not in new_roles:
+            # Проверяем, есть ли другие админы
+            other_admins_count = User.query.join(User.roles).filter(Role.name == 'admin', User.id != user.id).count()
+            if other_admins_count == 0:
+                return jsonify(
+                    {'error': 'Нельзя снять роль администратора с единственного администратора в системе'}), 403
+
+    try:
+        user.roles = new_roles
+        db.session.commit()
+
+        # Возвращаем обновленный список ролей пользователя
+        updated_user_roles_display = [role.display_name for role in user.roles]
+        updated_user_role_ids = [role.id for role in user.roles]
+
+        return jsonify({
+            'message': f'Роли пользователя {user.username} обновлены',
+            'roles': updated_user_roles_display,
+            'role_ids': updated_user_role_ids
+        }), 200
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'error': f'Ошибка обновления ролей пользователя: {str(e)}'}), 500
+
 @app.route('/api/auth/register-step1', methods=['POST'])
 def register_step1():
     """
