@@ -11,6 +11,9 @@ import json
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import smtplib
+from sqlalchemy import func # Убедитесь, что func импортирован
+from sqlalchemy.orm import aliased
+from sqlalchemy.orm import aliased, joinedload
 
 """
 Создание и конфигурация Flask приложения.
@@ -870,75 +873,76 @@ def get_departments():
     Доступно только пользователям с ролью 'admin'.
     """
     current_user_id = get_jwt_identity()
-    user = User.query.get(current_user_id)
-    if 'admin' not in [role.name for role in user.roles]:
-        return jsonify({'error': 'Недостаточно прав'}), 403
+    user = db.session.get(User, current_user_id)  # Современный способ
+
+    if not user or 'admin' not in [role.name for role in user.roles]:  # Добавил проверку user
+        return jsonify({'error': 'Недостаточно прав или пользователь не найден'}), 403
 
     # 1. Получить всех пользователей с профилями для руководителей (оптимизация)
     heads_profiles_map = {}
     # Загружаем пользователей вместе с их профилями, чтобы избежать N+1 запросов
-    # Фильтруем только тех, у кого есть профиль, чтобы не было ошибок при обращении к profile.last_name и т.д.
-    users_with_profiles = User.query.options(db.joinedload(User.profile)).filter(User.profile != None).all()
+    users_with_profiles = db.session.query(User).options(joinedload(User.profile)).filter(User.profile.has()).all()
     for u in users_with_profiles:
-        profile = u.profile  # Профиль точно есть из-за фильтра
+        profile = u.profile
         name_parts = filter(None, [profile.last_name, profile.first_name, profile.middle_name])
         full_name = ' '.join(name_parts)
-        heads_profiles_map[u.id] = full_name if full_name else u.username  # Фоллбэк на username
+        heads_profiles_map[u.id] = full_name if full_name.strip() else u.username
 
-    # 2. Получить все департаменты и количество их прямых детей одним запросом
-    # Мы используем children_list, так как это backref от parent в модели Department,
-    # и мы указали lazy='dynamic', что позволяет делать .count()
-    # Если у вас нет такого backref или он назван иначе, адаптируйте.
-    # Если children это просто db.relationship(... backref='parent'), то нужно использовать Department.parent_id == Department.id
+    # 2. Получить все департаменты и количество их прямых детей
+    ChildDepartment = aliased(Department)
 
-    # Получаем все департаменты и для каждого считаем количество прямых потомков
-    all_departments_with_children_count = db.session.query(
+    # Формируем запрос
+    query = db.session.query(
         Department,
-        db.func.count(Department.children).label('children_count')  # Используем db.func.count
-    ).outerjoin(Department.children).group_by(Department.id).all()  # Группируем по ID департамента
+        func.count(ChildDepartment.id).label('children_count')
+    )
+    # Добавляем outerjoin
+    query = query.outerjoin(ChildDepartment, Department.id == ChildDepartment.parent_id)
+    # Добавляем group_by
+    query = query.group_by(Department.id)
+
+    # Выполняем запрос
+    all_departments_with_children_count = query.all()
 
     # Создаем карту для быстрого доступа и построения дерева
-    # { dept_id: {'obj': DepartmentObject, 'children_count': int, 'children_list_objs': [ChildDeptObject, ...]} }
     departments_data_map = {}
     for dept_obj, children_count_val in all_departments_with_children_count:
         departments_data_map[dept_obj.id] = {
             'obj': dept_obj,
             'children_count': children_count_val,
-            'children_list_objs': []  # Будет заполнено на следующем шаге
+            'children_list_objs': []
         }
 
-    # 3. Построить связи родитель-ребенок (заполнить 'children_list_objs')
-    root_department_objs = []  # Список корневых объектов Department
-    for dept_id in departments_data_map:
-        dept_entry = departments_data_map[dept_id]
+    # 3. Построить связи родитель-ребенок
+    root_department_objs = []
+    for dept_id_map_key in departments_data_map:  # Используем dept_id_map_key для итерации по ключам
+        dept_entry = departments_data_map[dept_id_map_key]
         parent_id = dept_entry['obj'].parent_id
-        if parent_id is None:  # Это корневой элемент
+        if parent_id is None:
             root_department_objs.append(dept_entry['obj'])
-        elif parent_id in departments_data_map:  # Если родитель существует в нашей карте
+        elif parent_id in departments_data_map:
             departments_data_map[parent_id]['children_list_objs'].append(dept_entry['obj'])
 
-    # 4. Рекурсивно построить JSON дерево из подготовленных данных
+    # 4. Рекурсивно построить JSON дерево
     def build_json_tree_recursive(department_object_list):
         tree_nodes = []
-        for dept_obj in department_object_list:
-            dept_id = dept_obj.id
-            # Получаем ранее рассчитанные данные из карты
-            dept_data_from_map = departments_data_map[dept_id]
+        for dept_obj_tree in department_object_list:  # Используем dept_obj_tree для избежания конфликта имен
+            dept_id_tree = dept_obj_tree.id
+            dept_data_from_map = departments_data_map[dept_id_tree]
 
             head_info = None
-            if dept_obj.head_user_id and dept_obj.head_user_id in heads_profiles_map:
-                head_info = {'id': dept_obj.head_user_id, 'name': heads_profiles_map[dept_obj.head_user_id]}
+            if dept_obj_tree.head_user_id and dept_obj_tree.head_user_id in heads_profiles_map:
+                head_info = {'id': dept_obj_tree.head_user_id, 'name': heads_profiles_map[dept_obj_tree.head_user_id]}
 
             node = {
-                'id': dept_id,
-                'name': dept_obj.name,
-                'short_name': dept_obj.short_name,
-                'description': dept_obj.description,
-                'parent_id': dept_obj.parent_id,
+                'id': dept_id_tree,
+                'name': dept_obj_tree.name,
+                'short_name': dept_obj_tree.short_name,
+                'description': dept_obj_tree.description,
+                'parent_id': dept_obj_tree.parent_id,
                 'head': head_info,
-                'created_at': dept_obj.created_at.isoformat() + 'Z',  # ИЗМЕНЕНО: ISO формат UTC
-                'children_count': dept_data_from_map['children_count'],  # Берем посчитанное количество
-                # Рекурсивно строим для отсортированных дочерних элементов
+                'created_at': dept_obj_tree.created_at.isoformat() + 'Z',
+                'children_count': dept_data_from_map['children_count'],
                 'children': build_json_tree_recursive(
                     sorted(dept_data_from_map['children_list_objs'], key=lambda d: d.name)
                 )
@@ -946,7 +950,6 @@ def get_departments():
             tree_nodes.append(node)
         return tree_nodes
 
-    # Строим дерево, начиная с отсортированных корневых элементов
     final_tree_structure = build_json_tree_recursive(
         sorted(root_department_objs, key=lambda d: d.name)
     )
