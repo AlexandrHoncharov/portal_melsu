@@ -1,5 +1,6 @@
 from flask import Flask, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy.orm import backref
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager, create_access_token, create_refresh_token, jwt_required, get_jwt_identity
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -203,20 +204,7 @@ class Form(db.Model):
 class Department(db.Model):
     """
     Модель структурных подразделений университета.
-
-    Атрибуты:
-        id (int): Уникальный идентификатор подразделения.
-        name (str): Полное название подразделения.
-        short_name (str, optional): Краткое название подразделения.
-        description (str, optional): Описание подразделения.
-        parent_id (int, optional): Внешний ключ к 'department.id' (родительское подразделение).
-        head_user_id (int, optional): Внешний ключ к 'user.id' (руководитель подразделения).
-        created_by (int, optional): Внешний ключ к 'user.id' (создатель записи о подразделении).
-        created_at (datetime): Дата и время создания записи.
-        parent (Department): Связь с родительским подразделением.
-        children (list[Department]): Список дочерних подразделений.
-        head (User): Пользователь, являющийся руководителем подразделения.
-        creator (User): Пользователь, создавший запись о подразделении.
+    ... (остальные атрибуты без изменений) ...
     """
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(200), nullable=False)
@@ -227,10 +215,10 @@ class Department(db.Model):
     created_by = db.Column(db.Integer, db.ForeignKey('user.id'))
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
-    parent = db.relationship('Department', remote_side=[id], backref='children')
+    # ИЗМЕНЕНИЕ ЗДЕСЬ: lazy='dynamic' для children
+    parent = db.relationship('Department', remote_side=[id], backref=backref('children', lazy='dynamic'))
     head = db.relationship('User', foreign_keys=[head_user_id], backref='headed_departments')
     creator = db.relationship('User', foreign_keys=[created_by], backref='created_departments')
-
 
 """
 ================= УТИЛИТЫ =================
@@ -758,20 +746,20 @@ def get_forms():
     """
     Получение списка всех созданных форм.
     Доступно только пользователям с ролью 'admin'.
-
-    Returns:
-        JSON: Список форм с их атрибутами.
     """
     current_user_id = get_jwt_identity()
     user = User.query.get(current_user_id)
-    user_roles = [role.name for role in user.roles]
-    if 'admin' not in user_roles:
+    if 'admin' not in [role.name for role in user.roles]: # Более прямой способ проверки роли
         return jsonify({'error': 'Недостаточно прав'}), 403
 
-    forms = Form.query.all()
+    forms = Form.query.order_by(Form.created_at.desc()).all() # Сортировка для консистентности
     forms_data = []
     for form in forms:
-        fields = json.loads(form.fields) if form.fields else []
+        try:
+            fields = json.loads(form.fields) if form.fields else []
+        except json.JSONDecodeError:
+            fields = [] # Обработка случая, если в form.fields невалидный JSON
+
         forms_data.append({
             'id': form.id,
             'name': form.name,
@@ -780,8 +768,8 @@ def get_forms():
             'responsible': form.responsible,
             'period': form.period,
             'fields': fields,
-            'create': form.created_at.strftime('%d.%m.%Y'),
-            'status': 'Активна'
+            'create': form.created_at.isoformat() + 'Z',  # ИЗМЕНЕНО: ISO формат UTC
+            'status': 'Активна' # Этот статус может быть более динамичным
         })
     return jsonify(forms_data), 200
 
@@ -872,47 +860,97 @@ def delete_form(form_id):
 Доступно только для администраторов.
 """
 
+
 @app.route('/api/departments', methods=['GET'])
 @jwt_required()
 def get_departments():
     """
     Получение иерархической структуры всех подразделений.
+    Оптимизирован для уменьшения количества запросов к БД.
     Доступно только пользователям с ролью 'admin'.
-
-    Returns:
-        JSON: Древовидная структура подразделений.
     """
     current_user_id = get_jwt_identity()
     user = User.query.get(current_user_id)
-    user_roles = [role.name for role in user.roles]
-    if 'admin' not in user_roles:
+    if 'admin' not in [role.name for role in user.roles]:
         return jsonify({'error': 'Недостаточно прав'}), 403
 
-    departments = Department.query.all()
+    # 1. Получить всех пользователей с профилями для руководителей (оптимизация)
+    heads_profiles_map = {}
+    # Загружаем пользователей вместе с их профилями, чтобы избежать N+1 запросов
+    # Фильтруем только тех, у кого есть профиль, чтобы не было ошибок при обращении к profile.last_name и т.д.
+    users_with_profiles = User.query.options(db.joinedload(User.profile)).filter(User.profile != None).all()
+    for u in users_with_profiles:
+        profile = u.profile  # Профиль точно есть из-за фильтра
+        name_parts = filter(None, [profile.last_name, profile.first_name, profile.middle_name])
+        full_name = ' '.join(name_parts)
+        heads_profiles_map[u.id] = full_name if full_name else u.username  # Фоллбэк на username
 
-    def build_tree(parent_id=None):
-        result = []
-        for dept in departments:
-            if dept.parent_id == parent_id:
-                dept_data = {
-                    'id': dept.id,
-                    'name': dept.name,
-                    'short_name': dept.short_name,
-                    'description': dept.description,
-                    'parent_id': dept.parent_id,
-                    'head': {
-                        'id': dept.head.id,
-                        'name': f"{dept.head.profile.last_name} {dept.head.profile.first_name}" if dept.head and dept.head.profile else None
-                    } if dept.head else None,
-                    'children': build_tree(dept.id),
-                    'created_at': dept.created_at.strftime('%d.%m.%Y')
-                }
-                result.append(dept_data)
-        return result
+    # 2. Получить все департаменты и количество их прямых детей одним запросом
+    # Мы используем children_list, так как это backref от parent в модели Department,
+    # и мы указали lazy='dynamic', что позволяет делать .count()
+    # Если у вас нет такого backref или он назван иначе, адаптируйте.
+    # Если children это просто db.relationship(... backref='parent'), то нужно использовать Department.parent_id == Department.id
 
-    tree = build_tree()
-    return jsonify(tree), 200
+    # Получаем все департаменты и для каждого считаем количество прямых потомков
+    all_departments_with_children_count = db.session.query(
+        Department,
+        db.func.count(Department.children).label('children_count')  # Используем db.func.count
+    ).outerjoin(Department.children).group_by(Department.id).all()  # Группируем по ID департамента
 
+    # Создаем карту для быстрого доступа и построения дерева
+    # { dept_id: {'obj': DepartmentObject, 'children_count': int, 'children_list_objs': [ChildDeptObject, ...]} }
+    departments_data_map = {}
+    for dept_obj, children_count_val in all_departments_with_children_count:
+        departments_data_map[dept_obj.id] = {
+            'obj': dept_obj,
+            'children_count': children_count_val,
+            'children_list_objs': []  # Будет заполнено на следующем шаге
+        }
+
+    # 3. Построить связи родитель-ребенок (заполнить 'children_list_objs')
+    root_department_objs = []  # Список корневых объектов Department
+    for dept_id in departments_data_map:
+        dept_entry = departments_data_map[dept_id]
+        parent_id = dept_entry['obj'].parent_id
+        if parent_id is None:  # Это корневой элемент
+            root_department_objs.append(dept_entry['obj'])
+        elif parent_id in departments_data_map:  # Если родитель существует в нашей карте
+            departments_data_map[parent_id]['children_list_objs'].append(dept_entry['obj'])
+
+    # 4. Рекурсивно построить JSON дерево из подготовленных данных
+    def build_json_tree_recursive(department_object_list):
+        tree_nodes = []
+        for dept_obj in department_object_list:
+            dept_id = dept_obj.id
+            # Получаем ранее рассчитанные данные из карты
+            dept_data_from_map = departments_data_map[dept_id]
+
+            head_info = None
+            if dept_obj.head_user_id and dept_obj.head_user_id in heads_profiles_map:
+                head_info = {'id': dept_obj.head_user_id, 'name': heads_profiles_map[dept_obj.head_user_id]}
+
+            node = {
+                'id': dept_id,
+                'name': dept_obj.name,
+                'short_name': dept_obj.short_name,
+                'description': dept_obj.description,
+                'parent_id': dept_obj.parent_id,
+                'head': head_info,
+                'created_at': dept_obj.created_at.isoformat() + 'Z',  # ИЗМЕНЕНО: ISO формат UTC
+                'children_count': dept_data_from_map['children_count'],  # Берем посчитанное количество
+                # Рекурсивно строим для отсортированных дочерних элементов
+                'children': build_json_tree_recursive(
+                    sorted(dept_data_from_map['children_list_objs'], key=lambda d: d.name)
+                )
+            }
+            tree_nodes.append(node)
+        return tree_nodes
+
+    # Строим дерево, начиная с отсортированных корневых элементов
+    final_tree_structure = build_json_tree_recursive(
+        sorted(root_department_objs, key=lambda d: d.name)
+    )
+    return jsonify(final_tree_structure), 200
 
 @app.route('/api/departments', methods=['POST'])
 @jwt_required()
@@ -959,21 +997,9 @@ def create_department():
 @app.route('/api/departments/<int:dept_id>', methods=['PUT'])
 @jwt_required()
 def update_department(dept_id):
-    """
-    Обновление существующего структурного подразделения.
-    Доступно только пользователям с ролью 'admin'.
-    Принимает JSON с обновляемыми данными.
-
-    Args:
-        dept_id (int): Идентификатор обновляемого подразделения.
-
-    Returns:
-        JSON: Сообщение об успехе или ошибке.
-    """
     current_user_id = get_jwt_identity()
     user = User.query.get(current_user_id)
-    user_roles = [role.name for role in user.roles]
-    if 'admin' not in user_roles:
+    if 'admin' not in [role.name for role in user.roles]:
         return jsonify({'error': 'Недостаточно прав'}), 403
 
     department = Department.query.get(dept_id)
@@ -981,17 +1007,51 @@ def update_department(dept_id):
         return jsonify({'error': 'Подразделение не найдено'}), 404
 
     data = request.get_json()
+    if not data:  # Проверка, что данные вообще пришли
+        return jsonify({'error': 'Отсутствуют данные для обновления'}), 400
+
     try:
-        department.name = data.get('name', department.name)
-        department.short_name = data.get('short_name', department.short_name)
-        department.description = data.get('description', department.description)
-        department.parent_id = data.get('parent_id') if data.get('parent_id') is not None else department.parent_id # Allow setting parent_id to None
-        department.head_user_id = data.get('head_user_id') if data.get('head_user_id') is not None else department.head_user_id # Allow setting head_user_id to None
+        # Обновляем поля, если они есть в запросе
+        if 'name' in data:
+            department.name = data['name']
+        if 'short_name' in data:
+            department.short_name = data['short_name']
+        if 'description' in data:
+            department.description = data['description']
+
+        if 'parent_id' in data:
+            new_parent_id_str = data.get('parent_id')
+            new_parent_id = int(new_parent_id_str) if new_parent_id_str else None
+
+            if new_parent_id == department.id:
+                return jsonify({'error': 'Нельзя установить подразделение родительским самому себе.'}), 400
+
+            # Проверка на циклическую зависимость (чтобы не сделать потомка родителем)
+            if new_parent_id is not None:
+                current_check_dept = Department.query.get(new_parent_id)
+                path_to_root = [current_check_dept.id] if current_check_dept else []
+                while current_check_dept and current_check_dept.parent_id is not None:
+                    if current_check_dept.parent_id == department.id:
+                        return jsonify({
+                                           'error': 'Обнаружена циклическая зависимость. Нельзя назначить потомка родительским подразделением.'}), 400
+                    current_check_dept = current_check_dept.parent
+                    if current_check_dept:  # Защита от бесконечного цикла, если что-то не так с данными
+                        if current_check_dept.id in path_to_root: break  # Цикл в структуре выше
+                        path_to_root.append(current_check_dept.id)
+
+            department.parent_id = new_parent_id
+
+        if 'head_user_id' in data:
+            new_head_id_str = data.get('head_user_id')
+            department.head_user_id = int(new_head_id_str) if new_head_id_str else None
 
         db.session.commit()
         print(f"✏️ Обновлено подразделение '{department.name}'")
         return jsonify({'message': 'Подразделение обновлено'}), 200
 
+    except ValueError:  # Если int() не сработает для parent_id или head_user_id
+        db.session.rollback()
+        return jsonify({'error': 'Неверный формат ID для родительского подразделения или руководителя.'}), 400
     except Exception as e:
         db.session.rollback()
         print(f"❌ Ошибка обновления подразделения: {e}")
@@ -1001,29 +1061,18 @@ def update_department(dept_id):
 @app.route('/api/departments/<int:dept_id>', methods=['DELETE'])
 @jwt_required()
 def delete_department(dept_id):
-    """
-    Удаление структурного подразделения.
-    Доступно только пользователям с ролью 'admin'.
-    Нельзя удалить подразделение, если у него есть дочерние элементы.
-
-    Args:
-        dept_id (int): Идентификатор удаляемого подразделения.
-
-    Returns:
-        JSON: Сообщение об успехе или ошибке.
-    """
     current_user_id = get_jwt_identity()
     user = User.query.get(current_user_id)
-    user_roles = [role.name for role in user.roles]
-    if 'admin' not in user_roles:
+    if 'admin' not in [role.name for role in user.roles]:
         return jsonify({'error': 'Недостаточно прав'}), 403
 
     department = Department.query.get(dept_id)
     if not department:
         return jsonify({'error': 'Подразделение не найдено'}), 404
 
-    if department.children:
-        return jsonify({'error': 'Нельзя удалить подразделение с дочерними элементами'}), 400
+    # Благодаря lazy='dynamic' для 'children', мы можем вызвать .count()
+    if department.children.count() > 0:
+        return jsonify({'error': 'Нельзя удалить подразделение, у которого есть дочерние элементы. Сначала удалите или переместите их.'}), 400
 
     try:
         dept_name = department.name
@@ -1032,11 +1081,11 @@ def delete_department(dept_id):
 
         print(f"🗑️ Удалено подразделение '{dept_name}'")
         return jsonify({'message': 'Подразделение удалено'}), 200
-
     except Exception as e:
         db.session.rollback()
         print(f"❌ Ошибка удаления подразделения: {e}")
         return jsonify({'error': 'Ошибка удаления подразделения'}), 500
+
 
 
 @app.route('/api/users/employees', methods=['GET'])
