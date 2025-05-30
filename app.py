@@ -71,84 +71,80 @@ def admin_required(fn):
 
     return wrapper
 
-class User(db.Model):
-    """
-    Основная модель пользователя.
+user_roles = db.Table('user_roles',
+    db.Column('user_id', db.Integer, db.ForeignKey('user.id'), primary_key=True),
+    db.Column('role_id', db.Integer, db.ForeignKey('role.id'), primary_key=True)
+)
 
-    Атрибуты:
-        id (int): Уникальный идентификатор пользователя.
-        email (str): Email пользователя, должен быть уникальным.
-        username (str): Имя пользователя, должно быть уникальным.
-        password_hash (str): Хэш пароля пользователя.
-        phone (str, optional): Номер телефона пользователя.
-        is_verified (bool): Флаг, указывающий, подтвержден ли email пользователя.
-        created_at (datetime): Дата и время создания пользователя.
-        last_login (datetime, optional): Дата и время последнего входа пользователя.
-        profile (UserProfile): Связанный профиль пользователя (один-к-одному).
-        roles (list[Role]): Список ролей, назначенных пользователю (многие-ко-многим).
-        created_forms (list[Form]): Список форм, созданных пользователем (один-ко-многим).
-    """
+department_users = db.Table('department_users',
+    db.Column('user_id', db.Integer, db.ForeignKey('user.id'), primary_key=True),
+    db.Column('department_id', db.Integer, db.ForeignKey('department.id'), primary_key=True)
+)
+
+
+class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     email = db.Column(db.String(120), unique=True, nullable=False)
     username = db.Column(db.String(80), unique=True, nullable=False)
-    password_hash = db.Column(db.String(128))
-    phone = db.Column(db.String(20))
+    password_hash = db.Column(db.String(128), nullable=True)  # Может быть nullable до завершения регистрации
+    phone = db.Column(db.String(20), nullable=True)
     is_verified = db.Column(db.Boolean, default=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    last_login = db.Column(db.DateTime)
+    last_login = db.Column(db.DateTime, nullable=True)
 
     profile = db.relationship('UserProfile', backref='user', uselist=False, cascade="all, delete-orphan")
-    roles = db.relationship('Role', secondary='user_roles', backref='users')
-    created_forms = db.relationship('Form', backref='creator')
+
+    roles = db.relationship('Role', secondary=user_roles, lazy='subquery',
+                            backref=db.backref('users', lazy=True))
+
+    # Связь для получения подразделений, в которых состоит пользователь
+    departments_member_of = db.relationship(
+        'Department',
+        secondary=department_users,  # Используем объект таблицы
+        lazy='subquery',  # Загрузит все связанные подразделения одним доп. запросом при доступе
+        backref=db.backref('members_in_department', lazy='dynamic')
+        # Позволит Department.members_in_department.all() или .count()
+    )
+
+    # Отношения для созданных сущностей (если нужно)
+    # created_forms = db.relationship('Form', backref='creator', lazy=True)
+    # created_departments = db.relationship('Department', foreign_keys=[Department.created_by], backref='creator_user', lazy=True)
+    # headed_departments = db.relationship('Department', foreign_keys=[Department.head_user_id], backref='head_user', lazy=True)
 
 
 class UserProfile(db.Model):
-    """
-    Профиль пользователя с дополнительной информацией.
-
-    Атрибуты:
-        id (int): Уникальный идентификатор профиля.
-        user_id (int): Внешний ключ к таблице 'user'.
-        first_name (str, optional): Имя пользователя.
-        last_name (str, optional): Фамилия пользователя.
-        middle_name (str, optional): Отчество пользователя.
-        birth_date (date, optional): Дата рождения пользователя.
-        gender (str, optional): Пол пользователя.
-        department (str, optional): Отдел (для сотрудников).
-        position (str, optional): Должность (для сотрудников).
-        course (int, optional): Курс (для студентов).
-        group_name (str, optional): Название группы (для студентов).
-        school (str, optional): Школа (для школьников).
-    """
     id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
-    first_name = db.Column(db.String(50))
-    last_name = db.Column(db.String(50))
-    middle_name = db.Column(db.String(50))
-    birth_date = db.Column(db.Date)
-    gender = db.Column(db.String(10))
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False,
+                        unique=True)  # unique=True для один-к-одному
 
-    department = db.Column(db.String(100))  # для сотрудников
-    position = db.Column(db.String(100))  # для сотрудников
-    course = db.Column(db.Integer)  # для студентов
-    group_name = db.Column(db.String(20))  # для студентов
-    school = db.Column(db.String(200))  # для школьников
+    first_name = db.Column(db.String(50), nullable=True)
+    last_name = db.Column(db.String(50), nullable=True)
+    middle_name = db.Column(db.String(50), nullable=True)
+    birth_date = db.Column(db.Date, nullable=True)
+    gender = db.Column(db.String(10), nullable=True)
+
+    # Поля для разных ролей, которые вы хотите отображать
+    position = db.Column(db.String(100), nullable=True)  # Должность (Сотрудник, Преподаватель)
+    main_department_name = db.Column(db.String(100),
+                                     nullable=True)  # Основное подразделение/кафедра (текстовое поле для Сотрудника/Преподавателя)
+
+    training_direction = db.Column(db.String(100), nullable=True)  # Направление подготовки (Студент)
+    student_department_name = db.Column(db.String(100),
+                                        nullable=True)  # Кафедра (Студент) - если отличается от main_department_name
+    course = db.Column(db.Integer, nullable=True)  # Курс (Студент)
+    group_name = db.Column(db.String(20), nullable=True)  # Группа (Студент)
+
+    academic_degree = db.Column(db.String(100), nullable=True)  # Ученая степень (Преподаватель)
+
+    snils = db.Column(db.String(14), nullable=True)  # СНИЛС (Абитуриент)
+    school = db.Column(db.String(200), nullable=True)  # Школа (Школьник)
 
 
 class Role(db.Model):
-    """
-    Роли пользователей в системе.
-
-    Атрибуты:
-        id (int): Уникальный идентификатор роли.
-        name (str): Системное имя роли (например, 'student', 'teacher'), уникальное.
-        display_name (str, optional): Отображаемое имя роли (например, 'Студент').
-        description (str, optional): Описание роли.
-    """
     id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(50), unique=True, nullable=False)
-    display_name = db.Column(db.String(100))
-    description = db.Column(db.Text)
+    name = db.Column(db.String(50), unique=True, nullable=False) # Системное имя (admin, student)
+    display_name = db.Column(db.String(100)) # Отображаемое имя (Админ, Студент)
+    description = db.Column(db.Text, nullable=True)
 
 
 '''
@@ -236,26 +232,16 @@ department_users = db.Table('department_users',
 )
 
 class Department(db.Model):
-    """
-    Модель структурных подразделений университета.
-    """
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(200), nullable=False)
-    short_name = db.Column(db.String(50))
-    description = db.Column(db.Text)
-    parent_id = db.Column(db.Integer, db.ForeignKey('department.id'))
-    head_user_id = db.Column(db.Integer, db.ForeignKey('user.id')) # Руководитель
-    created_by = db.Column(db.Integer, db.ForeignKey('user.id'))
+    short_name = db.Column(db.String(50), nullable=True)
+    description = db.Column(db.Text, nullable=True)
+    parent_id = db.Column(db.Integer, db.ForeignKey('department.id'), nullable=True)
+    head_user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
+    created_by = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     parent = db.relationship('Department', remote_side=[id], backref=backref('children', lazy='dynamic'))
-    head = db.relationship('User', foreign_keys=[head_user_id], backref='headed_departments') # Связь для руководителя
-    creator = db.relationship('User', foreign_keys=[created_by], backref='created_departments')
-
-    # НОВАЯ СВЯЗЬ: Пользователи в этом подразделении
-    members = db.relationship('User', secondary=department_users,
-                              lazy='dynamic', # Используем dynamic для возможности .count() и фильтрации
-                              backref=db.backref('departments', lazy='dynamic'))
 
 """
 ================= УТИЛИТЫ =================
@@ -1117,88 +1103,60 @@ def refresh():
 @app.route('/api/user/profile', methods=['GET'])
 @jwt_required()
 def get_profile():
-    """
-    Получение профиля текущего авторизованного пользователя.
-    Требует валидный access токен.
-    Возвращает подробную информацию о пользователе, его профиле и подразделениях.
-    """
     current_user_id = get_jwt_identity()
-    # Используем joinedload для одновременной загрузки профиля и списка подразделений, где пользователь состоит
     user = User.query.options(
         joinedload(User.profile),
-        joinedload(User.departments_member_of)  # Загружаем подразделения, в которых состоит пользователь
+        joinedload(User.departments_member_of),  # Загружаем подразделения
+        joinedload(User.roles)  # Загружаем роли, чтобы получить display_name
     ).get(current_user_id)
 
     if not user:
-        return jsonify({'error': 'Пользователь не найден'}), 404
+        return jsonify(error='Пользователь не найден'), 404
 
     user_data = {
         'id': user.id,
         'email': user.email,
         'username': user.username,
         'phone': user.phone,
-        'roles': [role.display_name for role in user.roles],  # Отображаемые имена ролей
-        'full_name': None,
-        'birth_date': None,
-        'profile': {},  # Инициализируем объект профиля
-        'member_of_departments': []  # Инициализируем список подразделений
+        'roles': [role.display_name for role in user.roles if role.display_name],  # Отображаемые имена ролей
+        'full_name': user.username,  # Фоллбэк
+        'birth_date': None,  # Фоллбэк
+        'profile': {},
+        'member_of_departments': []  # Список названий подразделений
     }
 
-    # Формируем ФИО
-    if user.profile and (user.profile.last_name or user.profile.first_name or user.profile.middle_name):
-        name_parts = [n for n in [user.profile.last_name, user.profile.first_name, user.profile.middle_name] if
-                      n and n.strip()]
-        user_data['full_name'] = ' '.join(name_parts) if name_parts else user.username
-    else:
-        user_data['full_name'] = user.username
-
-    # Форматируем дату рождения
-    if user.profile and user.profile.birth_date:
-        try:
-            # Пример форматирования даты (можете адаптировать под ваш формат)
-            # months = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря']
-            # day = user.profile.birth_date.day
-            # month = months[user.profile.birth_date.month - 1]
-            # year = user.profile.birth_date.year
-            # user_data['birth_date'] = f"{day} {month} {year} г."
-            user_data['birth_date'] = user.profile.birth_date.strftime(
-                '%d %B %Y г.')  # Более простой способ с русскими локалями
-        except AttributeError:  # На случай если birth_date не объект date/datetime
-            user_data['birth_date'] = str(user.profile.birth_date) if user.profile.birth_date else None
-        except Exception as e:  # Ловим другие возможные ошибки форматирования
-            print(f"Ошибка форматирования даты рождения: {e}")
-            user_data['birth_date'] = str(user.profile.birth_date) if user.profile.birth_date else None
-
-    # Заполняем данные профиля, если они есть
     if user.profile:
+        profile = user.profile
+        name_parts = [n for n in [profile.last_name, profile.first_name, profile.middle_name] if n and n.strip()]
+        if name_parts:
+            user_data['full_name'] = ' '.join(name_parts)
+
+        if profile.birth_date:
+            try:
+                # Простой формат DD.MM.YYYY, можно настроить локали для месяцев
+                user_data['birth_date'] = profile.birth_date.strftime('%d.%m.%Y')
+            except Exception:
+                user_data['birth_date'] = str(profile.birth_date)
+
         user_data['profile'] = {
-            # Основные поля профиля, которые вы уже использовали
-            'first_name': user.profile.first_name,
-            'last_name': user.profile.last_name,
-            'middle_name': user.profile.middle_name,
-            'gender': user.profile.gender,
-
-            # Поля, которые вы хотите отображать в "Дополнительная информация"
-            'position': user.profile.position,  # Должность (Сотрудник, Преподаватель)
-            'main_department_name': user.profile.main_department_name,
-            # Основное подразделение/кафедра (Сотрудник, Преподаватель) - если есть такое поле
-
-            'training_direction': user.profile.training_direction,  # Направление подготовки (Студент)
-            'student_department_name': user.profile.student_department_name,  # Кафедра (Студент) - если есть
-            'course': user.profile.course,  # Курс (Студент)
-            'group_name': user.profile.group_name,  # Группа (Студент)
-
-            'academic_degree': user.profile.academic_degree,  # Ученая степень (Преподаватель)
-
-            'snils': user.profile.snils,  # СНИЛС (Абитуриент)
-            'school': user.profile.school  # Школа (Школьник)
-            # Добавьте другие поля из UserProfile, если они нужны
+            'first_name': profile.first_name,  # Дублирование, но может быть полезно для фронта
+            'last_name': profile.last_name,
+            'middle_name': profile.middle_name,
+            'gender': profile.gender,
+            'position': profile.position,
+            'main_department_name': profile.main_department_name,
+            'training_direction': profile.training_direction,
+            'student_department_name': profile.student_department_name,
+            'course': profile.course,
+            'group_name': profile.group_name,
+            'academic_degree': profile.academic_degree,
+            'snils': profile.snils,
+            'school': profile.school,
         }
 
-    # Получаем список названий подразделений, в которых состоит пользователь
     if user.departments_member_of:
         user_data['member_of_departments'] = [dept.name for dept in user.departments_member_of if dept.name]
-        # Если хотите передавать объекты с ID и именем:
+        # Для передачи объектов:
         # user_data['member_of_departments'] = [{'id': dept.id, 'name': dept.name} for dept in user.departments_member_of if dept.name]
 
     return jsonify(user_data), 200
