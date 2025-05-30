@@ -8,10 +8,12 @@ import secrets
 import re
 import json
 
-# Создание приложения
+"""
+Создание и конфигурация Flask приложения.
+Инициализация расширений: SQLAlchemy, JWTManager, CORS.
+"""
 app = Flask(__name__)
 
-# Конфигурация
 app.config['SECRET_KEY'] = 'dev-secret-key-change-in-production'
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///university.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
@@ -19,16 +21,34 @@ app.config['JWT_SECRET_KEY'] = 'jwt-secret-string'
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(hours=1)
 app.config['JWT_REFRESH_TOKEN_EXPIRES'] = timedelta(days=30)
 
-# Инициализация расширений
 db = SQLAlchemy(app)
 jwt = JWTManager(app)
 CORS(app, supports_credentials=True)
 
 
-# =============== МОДЕЛИ БАЗ ДАННЫХ ===============
+"""
+================= МОДЕЛИ БАЗ ДАННЫХ =================
+Этот блок определяет модели SQLAlchemy, используемые для представления
+структуры данных приложения в базе данных.
+"""
 
 class User(db.Model):
-    """Основная модель пользователя"""
+    """
+    Основная модель пользователя.
+
+    Атрибуты:
+        id (int): Уникальный идентификатор пользователя.
+        email (str): Email пользователя, должен быть уникальным.
+        username (str): Имя пользователя, должно быть уникальным.
+        password_hash (str): Хэш пароля пользователя.
+        phone (str, optional): Номер телефона пользователя.
+        is_verified (bool): Флаг, указывающий, подтвержден ли email пользователя.
+        created_at (datetime): Дата и время создания пользователя.
+        last_login (datetime, optional): Дата и время последнего входа пользователя.
+        profile (UserProfile): Связанный профиль пользователя (один-к-одному).
+        roles (list[Role]): Список ролей, назначенных пользователю (многие-ко-многим).
+        created_forms (list[Form]): Список форм, созданных пользователем (один-ко-многим).
+    """
     id = db.Column(db.Integer, primary_key=True)
     email = db.Column(db.String(120), unique=True, nullable=False)
     username = db.Column(db.String(80), unique=True, nullable=False)
@@ -38,14 +58,29 @@ class User(db.Model):
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     last_login = db.Column(db.DateTime)
 
-    # Связи
     profile = db.relationship('UserProfile', backref='user', uselist=False, cascade="all, delete-orphan")
     roles = db.relationship('Role', secondary='user_roles', backref='users')
     created_forms = db.relationship('Form', backref='creator')
 
 
 class UserProfile(db.Model):
-    """Профиль пользователя с дополнительной информацией"""
+    """
+    Профиль пользователя с дополнительной информацией.
+
+    Атрибуты:
+        id (int): Уникальный идентификатор профиля.
+        user_id (int): Внешний ключ к таблице 'user'.
+        first_name (str, optional): Имя пользователя.
+        last_name (str, optional): Фамилия пользователя.
+        middle_name (str, optional): Отчество пользователя.
+        birth_date (date, optional): Дата рождения пользователя.
+        gender (str, optional): Пол пользователя.
+        department (str, optional): Отдел (для сотрудников).
+        position (str, optional): Должность (для сотрудников).
+        course (int, optional): Курс (для студентов).
+        group_name (str, optional): Название группы (для студентов).
+        school (str, optional): Школа (для школьников).
+    """
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     first_name = db.Column(db.String(50))
@@ -54,7 +89,6 @@ class UserProfile(db.Model):
     birth_date = db.Column(db.Date)
     gender = db.Column(db.String(10))
 
-    # Дополнительные поля по ролям
     department = db.Column(db.String(100))  # для сотрудников
     position = db.Column(db.String(100))  # для сотрудников
     course = db.Column(db.Integer)  # для студентов
@@ -63,22 +97,43 @@ class UserProfile(db.Model):
 
 
 class Role(db.Model):
-    """Роли пользователей в системе"""
+    """
+    Роли пользователей в системе.
+
+    Атрибуты:
+        id (int): Уникальный идентификатор роли.
+        name (str): Системное имя роли (например, 'student', 'teacher'), уникальное.
+        display_name (str, optional): Отображаемое имя роли (например, 'Студент').
+        description (str, optional): Описание роли.
+    """
     id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(50), unique=True, nullable=False)  # student, teacher, etc
-    display_name = db.Column(db.String(100))  # Студент, Преподаватель, etc
+    name = db.Column(db.String(50), unique=True, nullable=False)
+    display_name = db.Column(db.String(100))
     description = db.Column(db.Text)
 
 
-# Промежуточная таблица для связи пользователей и ролей
+'''
+    Промежуточная таблица для связи многие-ко-многим между пользователями и ролями.
+    '''
+
 user_roles = db.Table('user_roles',
-                      db.Column('user_id', db.Integer, db.ForeignKey('user.id'), primary_key=True),
-                      db.Column('role_id', db.Integer, db.ForeignKey('role.id'), primary_key=True)
-                      )
+
+    db.Column('user_id', db.Integer, db.ForeignKey('user.id'), primary_key=True),
+    db.Column('role_id', db.Integer, db.ForeignKey('role.id'), primary_key=True)
+)
 
 
 class VerificationCode(db.Model):
-    """Временное хранение кодов подтверждения email"""
+    """
+    Модель для временного хранения кодов подтверждения email.
+
+    Атрибуты:
+        id (int): Уникальный идентификатор записи.
+        email (str): Email, на который отправлен код.
+        code (str): 6-значный код подтверждения.
+        created_at (datetime): Дата и время создания кода.
+        verified (bool): Флаг, указывающий, был ли код использован для подтверждения.
+    """
     id = db.Column(db.Integer, primary_key=True)
     email = db.Column(db.String(120), nullable=False)
     code = db.Column(db.String(6), nullable=False)
@@ -86,74 +141,141 @@ class VerificationCode(db.Model):
     verified = db.Column(db.Boolean, default=False)
 
     def is_expired(self):
-        return (datetime.utcnow() - self.created_at).total_seconds() > 600  # 10 минут
+        """Проверяет, истек ли срок действия кода (10 минут)."""
+        return (datetime.utcnow() - self.created_at).total_seconds() > 600
 
 
 class RegistrationData(db.Model):
-    """Временное хранение данных регистрации"""
+    """
+    Модель для временного хранения данных регистрации между шагами.
+
+    Атрибуты:
+        id (int): Уникальный идентификатор записи.
+        email (str): Email пользователя, проходящего регистрацию.
+        data (str): JSON-строка с данными регистрации.
+        created_at (datetime): Дата и время создания записи.
+    """
     id = db.Column(db.Integer, primary_key=True)
     email = db.Column(db.String(120), nullable=False)
-    data = db.Column(db.Text)  # JSON с данными регистрации
+    data = db.Column(db.Text)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
     def is_expired(self):
-        return (datetime.utcnow() - self.created_at).total_seconds() > 3600  # 1 час
+        """Проверяет, истек ли срок хранения данных (1 час)."""
+        return (datetime.utcnow() - self.created_at).total_seconds() > 3600
 
 
 class Form(db.Model):
-    """Модель для созданных форм (отчеты/заявки)"""
+    """
+    Модель для созданных форм (например, отчеты или заявки).
+
+    Атрибуты:
+        id (int): Уникальный идентификатор формы.
+        name (str): Название формы.
+        description (str, optional): Описание формы.
+        form_type (str, optional): Тип формы ('отчеты' или 'заявки').
+        responsible (str, optional): Ответственный за форму.
+        period (str, optional): Периодичность формы.
+        fields (str): JSON-строка, описывающая поля формы.
+        created_by (int): Внешний ключ к 'user.id', указывающий на создателя формы.
+        created_at (datetime): Дата и время создания формы.
+    """
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(200), nullable=False)
     description = db.Column(db.Text)
-    form_type = db.Column(db.String(50))  # 'отчеты' или 'заявки'
+    form_type = db.Column(db.String(50))
     responsible = db.Column(db.String(100))
     period = db.Column(db.String(50))
-    fields = db.Column(db.Text)  # JSON строка с полями
+    fields = db.Column(db.Text)
     created_by = db.Column(db.Integer, db.ForeignKey('user.id'))
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 
 class Department(db.Model):
-    """Модель структурных подразделений"""
+    """
+    Модель структурных подразделений университета.
+
+    Атрибуты:
+        id (int): Уникальный идентификатор подразделения.
+        name (str): Полное название подразделения.
+        short_name (str, optional): Краткое название подразделения.
+        description (str, optional): Описание подразделения.
+        parent_id (int, optional): Внешний ключ к 'department.id' (родительское подразделение).
+        head_user_id (int, optional): Внешний ключ к 'user.id' (руководитель подразделения).
+        created_by (int, optional): Внешний ключ к 'user.id' (создатель записи о подразделении).
+        created_at (datetime): Дата и время создания записи.
+        parent (Department): Связь с родительским подразделением.
+        children (list[Department]): Список дочерних подразделений.
+        head (User): Пользователь, являющийся руководителем подразделения.
+        creator (User): Пользователь, создавший запись о подразделении.
+    """
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(200), nullable=False)
-    short_name = db.Column(db.String(50))  # краткое название
+    short_name = db.Column(db.String(50))
     description = db.Column(db.Text)
     parent_id = db.Column(db.Integer, db.ForeignKey('department.id'))
-    head_user_id = db.Column(db.Integer, db.ForeignKey('user.id'))  # руководитель
+    head_user_id = db.Column(db.Integer, db.ForeignKey('user.id'))
     created_by = db.Column(db.Integer, db.ForeignKey('user.id'))
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
-    # Связи
     parent = db.relationship('Department', remote_side=[id], backref='children')
     head = db.relationship('User', foreign_keys=[head_user_id], backref='headed_departments')
     creator = db.relationship('User', foreign_keys=[created_by], backref='created_departments')
 
 
-# =============== УТИЛИТЫ ===============
+"""
+================= УТИЛИТЫ =================
+Вспомогательные функции, используемые в различных частях приложения.
+"""
+
+@app.route('/api/dev/email-codes', methods=['GET'])
+def dev_email_codes():
+    """Маршрут для просмотра кодов подтверждения (только для разработки)"""
+    if not app.debug:
+        return jsonify({'error': 'Route available only in debug mode'}), 403
+        
+    codes = VerificationCode.query.order_by(VerificationCode.created_at.desc()).all()
+    return jsonify([{
+        'email': code.email,
+        'code': code.code,
+        'created_at': code.created_at.isoformat(),
+        'verified': code.verified,
+        'expired': code.is_expired()
+    } for code in codes]), 200
 
 def generate_verification_code():
-    """Генерация 5-значного кода подтверждения"""
+    """Генерирует случайный 5-значный цифровой код."""
     return str(secrets.randbelow(100000)).zfill(5)
 
 
 def send_verification_email(email, code):
-    """Отправка кода на email (пока просто в консоль)"""
+    """
+    Отправляет код подтверждения на указанный email.
+    В текущей реализации выводит информацию в консоль.
+
+    Args:
+        email (str): Адрес электронной почты получателя.
+        code (str): Код подтверждения.
+
+    Returns:
+        bool: True, если "отправка" прошла успешно.
+    """
     print(f"📧 Отправляем код {code} на {email}")
     return True
 
 
 def cleanup_old_records():
-    """Очистка устаревших кодов и данных регистрации"""
+    """
+    Удаляет устаревшие записи кодов подтверждения и временных данных регистрации
+    из базы данных для поддержания чистоты и производительности.
+    """
     try:
-        # Удаляем старые коды (старше 1 часа)
         old_codes = VerificationCode.query.filter(
             VerificationCode.created_at < datetime.utcnow() - timedelta(hours=1)
         ).all()
         for code in old_codes:
             db.session.delete(code)
 
-        # Удаляем старые данные регистрации (старше 2 часов)
         old_data = RegistrationData.query.filter(
             RegistrationData.created_at < datetime.utcnow() - timedelta(hours=2)
         ).all()
@@ -168,7 +290,10 @@ def cleanup_old_records():
 
 
 def create_default_roles():
-    """Создание базовых ролей при первом запуске"""
+    """
+    Создает предопределенные роли пользователей в системе, если они еще не существуют.
+    Вызывается при инициализации приложения.
+    """
     roles_data = [
         {'name': 'student', 'display_name': 'Студент', 'description': 'Обучающийся студент'},
         {'name': 'teacher', 'display_name': 'Преподаватель', 'description': 'Преподавательский состав'},
@@ -186,40 +311,41 @@ def create_default_roles():
     print("✅ Базовые роли созданы")
 
 
-# =============== API РЕГИСТРАЦИИ ===============
+"""
+================= API РЕГИСТРАЦИИ =================
+Эндпоинты, отвечающие за многошаговый процесс регистрации новых пользователей.
+"""
 
 @app.route('/api/auth/register-step1', methods=['POST'])
 def register_step1():
-    """Шаг 1: Ввод email и отправка кода подтверждения"""
+    """
+    Шаг 1 регистрации: Прием email и отправка кода подтверждения.
+
+    Принимает JSON: {'email': 'user@example.com'}
+    Отправляет код подтверждения на указанный email (имитация).
+    Сохраняет код в базе данных.
+
+    Returns:
+        JSON: Сообщение об успехе или ошибке.
+    """
     data = request.get_json()
     email = data.get('email', '').strip()
 
-    # Валидация
     if not email:
         return jsonify({'error': 'Email обязателен'}), 400
 
     if not re.match(r'^[^\s@]+@[^\s@]+\.[^\s@]+$', email):
         return jsonify({'error': 'Неверный формат email'}), 400
 
-    # Проверка на существование пользователя
     if User.query.filter_by(email=email).first():
         return jsonify({'error': 'Пользователь с таким email уже существует'}), 400
 
-    # Очистка старых записей
     cleanup_old_records()
-
-    # Генерация кода
     verification_code = generate_verification_code()
-
-    # Удаление старых кодов для этого email
     VerificationCode.query.filter_by(email=email).delete()
-
-    # Сохранение нового кода
     new_code = VerificationCode(email=email, code=verification_code)
     db.session.add(new_code)
     db.session.commit()
-
-    # "Отправка" кода
     send_verification_email(email, verification_code)
 
     print(f"📝 Создан код {verification_code} для {email}")
@@ -228,7 +354,15 @@ def register_step1():
 
 @app.route('/api/auth/verify-code', methods=['POST'])
 def verify_code():
-    """Шаг 2: Проверка кода подтверждения"""
+    """
+    Шаг 2 регистрации: Проверка кода подтверждения.
+
+    Принимает JSON: {'email': 'user@example.com', 'code': '12345'}
+    Проверяет предоставленный код на соответствие и срок действия.
+
+    Returns:
+        JSON: Сообщение об успехе (код подтвержден) или ошибке.
+    """
     data = request.get_json()
     email = data.get('email')
     code = data.get('code')
@@ -238,7 +372,6 @@ def verify_code():
     if not email or not code:
         return jsonify({'error': 'Email и код обязательны'}), 400
 
-    # Поиск кода в базе
     verification = VerificationCode.query.filter_by(
         email=email,
         code=code,
@@ -247,21 +380,18 @@ def verify_code():
 
     if not verification:
         print(f"❌ Код не найден или уже использован")
-        # Отладочная информация
         all_codes = VerificationCode.query.filter_by(email=email).all()
         print(f"📋 Все коды для {email}:")
         for vc in all_codes:
             print(f"   - {vc.code} (verified: {vc.verified}, created: {vc.created_at})")
         return jsonify({'error': 'Неверный код'}), 400
 
-    # Проверка срока действия
     if verification.is_expired():
         print(f"⏰ Код истек")
         db.session.delete(verification)
         db.session.commit()
         return jsonify({'error': 'Код истек'}), 400
 
-    # Подтверждение кода
     verification.verified = True
     db.session.commit()
 
@@ -271,29 +401,29 @@ def verify_code():
 
 @app.route('/api/auth/resend-code', methods=['POST'])
 def resend_code():
-    """Повторная отправка кода подтверждения"""
+    """
+    Повторная отправка кода подтверждения.
+
+    Принимает JSON: {'email': 'user@example.com'}
+    Генерирует новый код, удаляет старые для этого email и "отправляет" новый.
+
+    Returns:
+        JSON: Сообщение об успехе или ошибке.
+    """
     data = request.get_json()
     email = data.get('email', '').strip()
 
     if not email:
         return jsonify({'error': 'Email обязателен'}), 400
 
-    # Проверка на существование пользователя
     if User.query.filter_by(email=email).first():
         return jsonify({'error': 'Пользователь с таким email уже существует'}), 400
 
-    # Генерация нового кода
     verification_code = generate_verification_code()
-
-    # Удаление старых кодов
     VerificationCode.query.filter_by(email=email).delete()
-
-    # Сохранение нового кода
     new_code = VerificationCode(email=email, code=verification_code)
     db.session.add(new_code)
     db.session.commit()
-
-    # Отправка
     send_verification_email(email, verification_code)
 
     print(f"🔄 Повторно отправлен код {verification_code} для {email}")
@@ -302,7 +432,16 @@ def resend_code():
 
 @app.route('/api/auth/register-step3', methods=['POST'])
 def register_step3():
-    """Шаг 3: Ввод username и пароля"""
+    """
+    Шаг 3 регистрации: Ввод username и пароля.
+
+    Принимает JSON: {'email': 'user@example.com', 'username': 'user1', 'password': 'password123'}
+    Проверяет, подтвержден ли email, уникальность username.
+    Сохраняет эти данные во временное хранилище.
+
+    Returns:
+        JSON: Сообщение об успехе или ошибке.
+    """
     data = request.get_json()
     email = data.get('email')
     username = data.get('username')
@@ -311,19 +450,14 @@ def register_step3():
     if not all([email, username, password]):
         return jsonify({'error': 'Все поля обязательны'}), 400
 
-    # Проверка подтверждения email
     verification = VerificationCode.query.filter_by(email=email, verified=True).first()
     if not verification:
         return jsonify({'error': 'Email не подтвержден'}), 400
 
-    # Проверка уникальности username
     if User.query.filter_by(username=username).first():
         return jsonify({'error': 'Пользователь с таким username уже существует'}), 400
 
-    # Удаление старых данных регистрации
     RegistrationData.query.filter_by(email=email).delete()
-
-    # Сохранение данных
     reg_data = RegistrationData(
         email=email,
         data=json.dumps({
@@ -341,16 +475,22 @@ def register_step3():
 
 @app.route('/api/auth/register-step4', methods=['POST'])
 def register_step4():
-    """Шаг 4: Личные данные"""
+    """
+    Шаг 4 регистрации: Ввод личных данных (ФИО, дата рождения, пол).
+
+    Принимает JSON: {'email': 'user@example.com', 'first_name': 'Иван', ...}
+    Обновляет временные данные регистрации этой информацией.
+
+    Returns:
+        JSON: Сообщение об успехе или ошибке.
+    """
     data = request.get_json()
     email = data.get('email')
 
-    # Получение данных из базы
     reg_data = RegistrationData.query.filter_by(email=email).first()
     if not reg_data or reg_data.is_expired():
         return jsonify({'error': 'Данные пользователя не найдены или истекли'}), 400
 
-    # Обновление данных
     user_data = json.loads(reg_data.data)
     user_data.update({
         'first_name': data.get('first_name'),
@@ -369,12 +509,20 @@ def register_step4():
 
 @app.route('/api/auth/register-complete', methods=['POST'])
 def register_complete():
-    """Шаг 5: Выбор ролей и создание пользователя"""
+    """
+    Шаг 5 регистрации: Выбор ролей и окончательное создание пользователя.
+
+    Принимает JSON: {'email': 'user@example.com', 'roles': ['Студент', 'Школьник']}
+    Создает пользователя, его профиль, назначает роли на основе всех собранных данных.
+    Удаляет временные данные регистрации и коды подтверждения.
+
+    Returns:
+        JSON: Сообщение об успешной регистрации или ошибке.
+    """
     data = request.get_json()
     email = data.get('email')
     selected_roles = data.get('roles', [])
 
-    # Получение данных регистрации
     reg_data = RegistrationData.query.filter_by(email=email).first()
     if not reg_data or reg_data.is_expired():
         return jsonify({'error': 'Данные пользователя не найдены или истекли'}), 400
@@ -382,7 +530,6 @@ def register_complete():
     user_data = json.loads(reg_data.data)
 
     try:
-        # Создание пользователя
         user = User(
             email=user_data['email'],
             username=user_data['username'],
@@ -390,9 +537,8 @@ def register_complete():
             is_verified=True
         )
         db.session.add(user)
-        db.session.flush()  # Получаем ID пользователя
+        db.session.flush()
 
-        # Создание профиля
         profile = UserProfile(
             user_id=user.id,
             first_name=user_data.get('first_name'),
@@ -400,26 +546,20 @@ def register_complete():
             middle_name=user_data.get('middle_name'),
             gender=user_data.get('gender')
         )
-
-        # Обработка даты рождения
         if user_data.get('birth_date'):
             try:
                 profile.birth_date = datetime.strptime(user_data['birth_date'], '%Y-%m-%d').date()
             except ValueError:
-                pass  # Игнорируем неверный формат даты
+                pass
 
         db.session.add(profile)
 
-        # Добавление ролей
         for role_display in selected_roles:
             role = Role.query.filter_by(display_name=role_display).first()
             if role:
                 user.roles.append(role)
 
-        # Сохранение всех изменений
         db.session.commit()
-
-        # Очистка временных данных
         VerificationCode.query.filter_by(email=email).delete()
         RegistrationData.query.filter_by(email=email).delete()
         db.session.commit()
@@ -433,11 +573,23 @@ def register_complete():
         return jsonify({'error': 'Ошибка создания пользователя'}), 500
 
 
-# =============== API АВТОРИЗАЦИИ ===============
+"""
+================= API АВТОРИЗАЦИИ =================
+Эндпоинты для входа существующих пользователей и обновления токенов.
+"""
 
 @app.route('/api/auth/login', methods=['POST'])
 def login():
-    """Авторизация пользователя"""
+    """
+    Авторизация пользователя.
+
+    Принимает JSON: {'email': 'user@example.com', 'password': 'password123'}
+    Проверяет учетные данные, верификацию email.
+    В случае успеха возвращает access и refresh токены, а также информацию о пользователе.
+
+    Returns:
+        JSON: Токены и данные пользователя или сообщение об ошибке.
+    """
     data = request.get_json()
     email = data.get('email')
     password = data.get('password')
@@ -445,7 +597,6 @@ def login():
     if not email or not password:
         return jsonify({'error': 'Email и пароль обязательны'}), 400
 
-    # Поиск пользователя
     user = User.query.filter_by(email=email).first()
 
     if not user or not check_password_hash(user.password_hash, password):
@@ -454,15 +605,11 @@ def login():
     if not user.is_verified:
         return jsonify({'error': 'Email не подтвержден'}), 401
 
-    # Обновление времени входа
     user.last_login = datetime.utcnow()
     db.session.commit()
 
-    # Создание токенов
     access_token = create_access_token(identity=user.id)
     refresh_token = create_refresh_token(identity=user.id)
-
-    # Формирование ответа
     user_roles = [role.display_name for role in user.roles]
 
     response_data = {
@@ -477,7 +624,6 @@ def login():
         }
     }
 
-    # Добавление данных профиля если есть
     if user.profile:
         response_data['user']['profile'] = {
             'first_name': user.profile.first_name,
@@ -492,25 +638,39 @@ def login():
 @app.route('/api/auth/refresh', methods=['POST'])
 @jwt_required(refresh=True)
 def refresh():
-    """Обновление access токена"""
+    """
+    Обновление access токена с использованием refresh токена.
+    Требует валидный refresh токен в заголовке Authorization.
+
+    Returns:
+        JSON: {'access_token': 'new_access_token'}
+    """
     current_user_id = get_jwt_identity()
     new_token = create_access_token(identity=current_user_id)
     return jsonify({'access_token': new_token})
 
 
-# =============== API ПОЛЬЗОВАТЕЛЯ ===============
+"""
+================= API ПОЛЬЗОВАТЕЛЯ =================
+Эндпоинты для получения информации о текущем пользователе.
+"""
 
 @app.route('/api/user/profile', methods=['GET'])
 @jwt_required()
 def get_profile():
-    """Получение профиля текущего пользователя"""
+    """
+    Получение профиля текущего авторизованного пользователя.
+    Требует валидный access токен.
+
+    Returns:
+        JSON: Подробная информация о пользователе и его профиле.
+    """
     current_user_id = get_jwt_identity()
     user = User.query.get(current_user_id)
 
     if not user:
         return jsonify({'error': 'Пользователь не найден'}), 404
 
-    # Формирование базовых данных
     user_data = {
         'id': user.id,
         'email': user.email,
@@ -521,13 +681,10 @@ def get_profile():
         'birth_date': None
     }
 
-    # Добавление данных профиля
     if user.profile:
-        # Полное имя
         names = [user.profile.last_name, user.profile.first_name, user.profile.middle_name]
         user_data['full_name'] = ' '.join(filter(None, names))
 
-        # Дата рождения
         if user.profile.birth_date:
             months = [
                 'января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
@@ -538,7 +695,6 @@ def get_profile():
             year = user.profile.birth_date.year
             user_data['birth_date'] = f"{day} {month} {year} г."
 
-        # Детали профиля
         user_data['profile'] = {
             'first_name': user.profile.first_name,
             'last_name': user.profile.last_name,
@@ -554,27 +710,32 @@ def get_profile():
     return jsonify(user_data), 200
 
 
-# =============== API ФОРМ ===============
+"""
+================= API ФОРМ =================
+Эндпоинты для управления формами (отчеты/заявки).
+Доступно только для администраторов.
+"""
 
 @app.route('/api/forms', methods=['GET'])
 @jwt_required()
 def get_forms():
-    """Получение списка форм (только для админов)"""
+    """
+    Получение списка всех созданных форм.
+    Доступно только пользователям с ролью 'admin'.
+
+    Returns:
+        JSON: Список форм с их атрибутами.
+    """
     current_user_id = get_jwt_identity()
     user = User.query.get(current_user_id)
-
-    # Проверка прав доступа
     user_roles = [role.name for role in user.roles]
     if 'admin' not in user_roles:
         return jsonify({'error': 'Недостаточно прав'}), 403
 
     forms = Form.query.all()
-
     forms_data = []
     for form in forms:
-        # Парсинг полей из JSON
         fields = json.loads(form.fields) if form.fields else []
-
         forms_data.append({
             'id': form.id,
             'name': form.name,
@@ -584,28 +745,30 @@ def get_forms():
             'period': form.period,
             'fields': fields,
             'create': form.created_at.strftime('%d.%m.%Y'),
-            'status': 'Активна'  # Пока статично
+            'status': 'Активна'
         })
-
     return jsonify(forms_data), 200
 
 
 @app.route('/api/forms', methods=['POST'])
 @jwt_required()
 def create_form():
-    """Создание новой формы (только для админов)"""
+    """
+    Создание новой формы.
+    Доступно только пользователям с ролью 'admin'.
+    Принимает JSON с данными формы: name, description, type, responsible, period, fields.
+
+    Returns:
+        JSON: ID созданной формы и сообщение об успехе или ошибке.
+    """
     current_user_id = get_jwt_identity()
     user = User.query.get(current_user_id)
-
-    # Проверка прав доступа
     user_roles = [role.name for role in user.roles]
     if 'admin' not in user_roles:
         return jsonify({'error': 'Недостаточно прав'}), 403
 
     data = request.get_json()
-
     try:
-        # Создание формы
         form = Form(
             name=data.get('name'),
             description=data.get('description'),
@@ -615,7 +778,6 @@ def create_form():
             fields=json.dumps(data.get('fields', [])),
             created_by=current_user_id
         )
-
         db.session.add(form)
         db.session.commit()
 
@@ -634,11 +796,18 @@ def create_form():
 @app.route('/api/forms/<int:form_id>', methods=['DELETE'])
 @jwt_required()
 def delete_form(form_id):
-    """Удаление формы (только для админов)"""
+    """
+    Удаление формы по ее ID.
+    Доступно только пользователям с ролью 'admin'.
+
+    Args:
+        form_id (int): Идентификатор удаляемой формы.
+
+    Returns:
+        JSON: Сообщение об успехе или ошибке.
+    """
     current_user_id = get_jwt_identity()
     user = User.query.get(current_user_id)
-
-    # Проверка прав доступа
     user_roles = [role.name for role in user.roles]
     if 'admin' not in user_roles:
         return jsonify({'error': 'Недостаточно прав'}), 403
@@ -661,15 +830,24 @@ def delete_form(form_id):
         return jsonify({'error': 'Ошибка удаления формы'}), 500
 
 
-# =============== API СТРУКТУРЫ ===============
+"""
+================= API СТРУКТУРЫ =================
+Эндпоинты для управления структурными подразделениями университета.
+Доступно только для администраторов.
+"""
 
 @app.route('/api/departments', methods=['GET'])
 @jwt_required()
 def get_departments():
-    """Получение структуры подразделений (только для админов)"""
+    """
+    Получение иерархической структуры всех подразделений.
+    Доступно только пользователям с ролью 'admin'.
+
+    Returns:
+        JSON: Древовидная структура подразделений.
+    """
     current_user_id = get_jwt_identity()
     user = User.query.get(current_user_id)
-
     user_roles = [role.name for role in user.roles]
     if 'admin' not in user_roles:
         return jsonify({'error': 'Недостаточно прав'}), 403
@@ -677,7 +855,6 @@ def get_departments():
     departments = Department.query.all()
 
     def build_tree(parent_id=None):
-        """Рекурсивное построение дерева подразделений"""
         result = []
         for dept in departments:
             if dept.parent_id == parent_id:
@@ -704,16 +881,21 @@ def get_departments():
 @app.route('/api/departments', methods=['POST'])
 @jwt_required()
 def create_department():
-    """Создание подразделения (только для админов)"""
+    """
+    Создание нового структурного подразделения.
+    Доступно только пользователям с ролью 'admin'.
+    Принимает JSON с данными подразделения: name, short_name, description, parent_id, head_user_id.
+
+    Returns:
+        JSON: ID созданного подразделения и сообщение об успехе или ошибке.
+    """
     current_user_id = get_jwt_identity()
     user = User.query.get(current_user_id)
-
     user_roles = [role.name for role in user.roles]
     if 'admin' not in user_roles:
         return jsonify({'error': 'Недостаточно прав'}), 403
 
     data = request.get_json()
-
     try:
         department = Department(
             name=data.get('name'),
@@ -723,7 +905,6 @@ def create_department():
             head_user_id=data.get('head_user_id') if data.get('head_user_id') else None,
             created_by=current_user_id
         )
-
         db.session.add(department)
         db.session.commit()
 
@@ -742,10 +923,19 @@ def create_department():
 @app.route('/api/departments/<int:dept_id>', methods=['PUT'])
 @jwt_required()
 def update_department(dept_id):
-    """Обновление подразделения"""
+    """
+    Обновление существующего структурного подразделения.
+    Доступно только пользователям с ролью 'admin'.
+    Принимает JSON с обновляемыми данными.
+
+    Args:
+        dept_id (int): Идентификатор обновляемого подразделения.
+
+    Returns:
+        JSON: Сообщение об успехе или ошибке.
+    """
     current_user_id = get_jwt_identity()
     user = User.query.get(current_user_id)
-
     user_roles = [role.name for role in user.roles]
     if 'admin' not in user_roles:
         return jsonify({'error': 'Недостаточно прав'}), 403
@@ -755,16 +945,14 @@ def update_department(dept_id):
         return jsonify({'error': 'Подразделение не найдено'}), 404
 
     data = request.get_json()
-
     try:
         department.name = data.get('name', department.name)
         department.short_name = data.get('short_name', department.short_name)
         department.description = data.get('description', department.description)
-        department.parent_id = data.get('parent_id') if data.get('parent_id') else None
-        department.head_user_id = data.get('head_user_id') if data.get('head_user_id') else None
+        department.parent_id = data.get('parent_id') if data.get('parent_id') is not None else department.parent_id # Allow setting parent_id to None
+        department.head_user_id = data.get('head_user_id') if data.get('head_user_id') is not None else department.head_user_id # Allow setting head_user_id to None
 
         db.session.commit()
-
         print(f"✏️ Обновлено подразделение '{department.name}'")
         return jsonify({'message': 'Подразделение обновлено'}), 200
 
@@ -777,10 +965,19 @@ def update_department(dept_id):
 @app.route('/api/departments/<int:dept_id>', methods=['DELETE'])
 @jwt_required()
 def delete_department(dept_id):
-    """Удаление подразделения"""
+    """
+    Удаление структурного подразделения.
+    Доступно только пользователям с ролью 'admin'.
+    Нельзя удалить подразделение, если у него есть дочерние элементы.
+
+    Args:
+        dept_id (int): Идентификатор удаляемого подразделения.
+
+    Returns:
+        JSON: Сообщение об успехе или ошибке.
+    """
     current_user_id = get_jwt_identity()
     user = User.query.get(current_user_id)
-
     user_roles = [role.name for role in user.roles]
     if 'admin' not in user_roles:
         return jsonify({'error': 'Недостаточно прав'}), 403
@@ -789,7 +986,6 @@ def delete_department(dept_id):
     if not department:
         return jsonify({'error': 'Подразделение не найдено'}), 404
 
-    # проверяем есть ли дочерние подразделения
     if department.children:
         return jsonify({'error': 'Нельзя удалить подразделение с дочерними элементами'}), 400
 
@@ -810,15 +1006,20 @@ def delete_department(dept_id):
 @app.route('/api/users/employees', methods=['GET'])
 @jwt_required()
 def get_employees():
-    """Получение списка сотрудников для назначения руководителей"""
+    """
+    Получение списка сотрудников и преподавателей.
+    Используется, например, для выбора руководителя подразделения.
+    Доступно только пользователям с ролью 'admin'.
+
+    Returns:
+        JSON: Список пользователей с ролями 'employee' или 'teacher'.
+    """
     current_user_id = get_jwt_identity()
     user = User.query.get(current_user_id)
-
     user_roles = [role.name for role in user.roles]
     if 'admin' not in user_roles:
         return jsonify({'error': 'Недостаточно прав'}), 403
 
-    # получаем всех пользователей с ролью сотрудника или преподавателя
     employee_role = Role.query.filter_by(name='employee').first()
     teacher_role = Role.query.filter_by(name='teacher').first()
 
@@ -828,38 +1029,47 @@ def get_employees():
     if teacher_role:
         employees.extend(teacher_role.users)
 
-    # убираем дубликаты
     unique_employees = {emp.id: emp for emp in employees}.values()
-
     result = []
     for emp in unique_employees:
         if emp.profile:
-            full_name = f"{emp.profile.last_name} {emp.profile.first_name}"
+            full_name = f"{emp.profile.last_name or ''} {emp.profile.first_name or ''}".strip()
             if emp.profile.middle_name:
                 full_name += f" {emp.profile.middle_name}"
         else:
             full_name = emp.username
+        if not full_name: # Fallback if profile names are empty
+            full_name = emp.username
+
 
         result.append({
             'id': emp.id,
-            'name': full_name,
+            'name': full_name.strip(),
             'username': emp.username,
             'email': emp.email
         })
-
     return jsonify(result), 200
 
 
-# =============== УТИЛИТЫ ДЛЯ РАЗРАБОТКИ ===============
+"""
+================= УТИЛИТЫ ДЛЯ РАЗРАБОТКИ =================
+Эндпоинты, предназначенные для помощи в разработке и тестировании.
+Не должны использоваться в производственной среде без должной защиты.
+"""
 
 @app.route('/api/test/create-admin', methods=['POST'])
 def create_test_admin():
-    """Создание тестового администратора"""
+    """
+    Создает тестового пользователя с правами администратора.
+    Используется для первоначальной настройки или тестирования.
+
+    Returns:
+        JSON: Данные созданного админа или сообщение об ошибке.
+    """
     if User.query.filter_by(username='admin').first():
         return jsonify({'error': 'Админ уже существует'}), 400
 
     try:
-        # Создание пользователя-админа
         admin = User(
             email='admin@university.ru',
             username='admin',
@@ -869,7 +1079,6 @@ def create_test_admin():
         db.session.add(admin)
         db.session.flush()
 
-        # Создание профиля
         profile = UserProfile(
             user_id=admin.id,
             first_name='Админ',
@@ -878,7 +1087,6 @@ def create_test_admin():
         )
         db.session.add(profile)
 
-        # Назначение роли админа
         admin_role = Role.query.filter_by(name='admin').first()
         if admin_role:
             admin.roles.append(admin_role)
@@ -900,7 +1108,13 @@ def create_test_admin():
 
 @app.route('/api/test/cleanup', methods=['POST'])
 def cleanup_database():
-    """Очистка временных данных (для разработки)"""
+    """
+    Выполняет очистку устаревших временных данных из базы.
+    Полезно для поддержания чистоты БД во время разработки.
+
+    Returns:
+        JSON: Сообщение об успехе или ошибке.
+    """
     try:
         cleanup_old_records()
         return jsonify({'message': 'База данных очищена'}), 200
@@ -908,18 +1122,18 @@ def cleanup_database():
         return jsonify({'error': f'Ошибка очистки: {e}'}), 500
 
 
-# =============== ИНИЦИАЛИЗАЦИЯ ===============
-
+"""
+================= ИНИЦИАЛИЗАЦИЯ ПРИЛОЖЕНИЯ =================
+Этот блок выполняется при запуске скрипта напрямую.
+Создает таблицы базы данных, базовые роли и очищает устаревшие записи.
+Запускает Flask development server.
+"""
 if __name__ == '__main__':
     with app.app_context():
-        # Создание таблиц
         db.create_all()
         print("🗄️ База данных инициализирована")
 
-        # Создание базовых ролей
         create_default_roles()
-
-        # Очистка старых записей при запуске
         cleanup_old_records()
 
     print("🚀 Сервер запущен на http://localhost:5000")
