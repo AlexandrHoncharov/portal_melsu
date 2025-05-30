@@ -29,9 +29,9 @@ jwt = JWTManager(app)
 CORS(app, supports_credentials=True)
 
 app.config['MAIL_SERVER'] = 'email.melsu.ru'
-app.config['MAIL_PORT'] = 587  # или 465 для SSL
+app.config['MAIL_PORT'] = 587
 app.config['MAIL_USERNAME'] = 'help@melsu.ru'
-app.config['MAIL_PASSWORD'] = 'fl_92||LII_O0'
+app.config['MAIL_PASSWORD'] = 'fl_92||LII_O0' # CRITICAL SECURITY ISSUE HERE
 app.config['MAIL_USE_TLS'] = True
 app.config['MAIL_DEFAULT_SENDER'] = 'help@melsu.ru'
 
