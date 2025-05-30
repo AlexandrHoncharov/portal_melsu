@@ -7,6 +7,9 @@ from datetime import datetime, timedelta
 import secrets
 import re
 import json
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+import smtplib
 
 """
 Создание и конфигурация Flask приложения.
@@ -25,6 +28,12 @@ db = SQLAlchemy(app)
 jwt = JWTManager(app)
 CORS(app, supports_credentials=True)
 
+app.config['MAIL_SERVER'] = 'smtp.melsu.ru'
+app.config['MAIL_PORT'] = 587  # или 465 для SSL
+app.config['MAIL_USERNAME'] = 'help@melsu.ru'
+app.config['MAIL_PASSWORD'] = 'fl_92||LII_O0'
+app.config['MAIL_USE_TLS'] = True
+app.config['MAIL_DEFAULT_SENDER'] = 'help@melsu.ru'
 
 """
 ================= МОДЕЛИ БАЗ ДАННЫХ =================
@@ -250,19 +259,46 @@ def generate_verification_code():
 
 def send_verification_email(email, code):
     """
-    Отправляет код подтверждения на указанный email.
-    В текущей реализации выводит информацию в консоль.
+    Отправляет код подтверждения на указанный email через SMTP сервер.
 
     Args:
-        email (str): Адрес электронной почты получателя.
-        code (str): Код подтверждения.
+        email (str): Email получателя
+        code (str): Код подтверждения
 
     Returns:
-        bool: True, если "отправка" прошла успешно.
+        bool: True если отправка успешна, False в случае ошибки
     """
-    print(f"📧 Отправляем код {code} на {email}")
-    return True
+    try:
+        msg = MIMEMultipart()
+        msg['From'] = app.config['MAIL_DEFAULT_SENDER']
+        msg['To'] = email
+        msg['Subject'] = 'Код подтверждения для портала МарГУ'
 
+        html = f"""
+        <html>
+            <body>
+                <h2>Код подтверждения</h2>
+                <p>Ваш код для подтверждения регистрации: <b>{code}</b></p>
+                <p>Код действителен в течение 10 минут.</p>
+                <hr>
+                <small>Это автоматическое сообщение, не отвечайте на него.</small>
+            </body>
+        </html>
+        """
+        msg.attach(MIMEText(html, 'html'))
+
+        with smtplib.SMTP(app.config['MAIL_SERVER'], app.config['MAIL_PORT']) as server:
+            if app.config['MAIL_USE_TLS']:
+                server.starttls()
+            server.login(app.config['MAIL_USERNAME'], app.config['MAIL_PASSWORD'])
+            server.send_message(msg)
+
+        print(f"📧 Код {code} успешно отправлен на {email}")
+        return True
+
+    except Exception as e:
+        print(f"❌ Ошибка отправки email: {e}")
+        return False
 
 def cleanup_old_records():
     """
